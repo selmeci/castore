@@ -38,7 +38,7 @@
     "watch": "rm -rf dist && concurrently 'yarn:package-* --watch'"
   },
   "dependencies": {
-    "throttled-queue": "^2.1.4"
+    "throttled-queue": "^3.0.0"
   },
   "devDependencies": {
     "@babel/cli": "^7.28.3",
