@@ -32,7 +32,7 @@ assertExtends;
 // --- EVENT STORE ID ---
 
 const assertEventStoreId: A.Equals<
-  typeof pokemonsEventStore['eventStoreId'],
+  (typeof pokemonsEventStore)['eventStoreId'],
   'POKEMONS'
 > = 1;
 assertEventStoreId;
