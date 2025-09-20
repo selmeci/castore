@@ -1,4 +1,3 @@
-/* eslint-disable max-lines */
 import { vi } from 'vitest';
 
 import { OptionalTimestamp, EventDetail } from '~/event/eventDetail';
