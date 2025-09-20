@@ -1,66 +1,32 @@
 {
-  "extends": "@nrwl/workspace/presets/npm.json",
-  "npmScope": "castore",
-  "tasksRunnerOptions": {
-    "default": {
-      "runner": "@nrwl/workspace/tasks-runners/default",
-      "options": {
-        "cacheableOperations": [
-          "build",
-          "package",
-          "test",
-          "test-all",
-          "test-type",
-          "test-linter",
-          "test-stylelint",
-          "test-unit"
-        ],
-        "cacheDirectory": "nx-cache"
-      }
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^package"],
+      "outputs": ["{projectRoot}/build", "{projectRoot}/dist"],
+      "cache": true
+    },
+    "package": {
+      "dependsOn": ["^package"],
+      "outputs": ["{projectRoot}/dist"],
+      "cache": true
+    },
+    "test": {
+      "dependsOn": ["^package"],
+      "cache": true
+    },
+    "test-linter": {
+      "dependsOn": ["^package"],
+      "cache": true
+    },
+    "test-type": {
+      "dependsOn": ["^package"],
+      "cache": true
+    },
+    "test-unit": {
+      "dependsOn": ["^package"],
+      "cache": true
     }
   },
-  "targetDependencies": {
-    "build": [
-      {
-        "target": "package",
-        "projects": "dependencies"
-      }
-    ],
-    "package": [
-      {
-        "target": "package",
-        "projects": "dependencies"
-      }
-    ],
-    "test": [
-      {
-        "target": "package",
-        "projects": "dependencies"
-      }
-    ],
-    "test-linter": [
-      {
-        "target": "package",
-        "projects": "dependencies"
-      }
-    ],
-    "test-type": [
-      {
-        "target": "package",
-        "projects": "dependencies"
-      }
-    ],
-    "test-unit": [
-      {
-        "target": "package",
-        "projects": "dependencies"
-      }
-    ]
-  },
-  "affected": {
-    "defaultBase": "main"
-  },
-  "implicitDependencies": {
-    "*": "*"
-  }
+  "extends": "@nx/workspace/presets/npm.json",
+  "defaultBase": "main"
 }

@@ -65,15 +65,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/event-storage-adapter-in-memory/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@castore/core": "*"
   }

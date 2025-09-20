@@ -64,15 +64,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/event-type-zod/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@castore/core": "*",
     "zod": "^3.0.0"

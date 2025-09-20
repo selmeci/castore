@@ -70,15 +70,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/message-bus-adapter-event-bridge/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@aws-sdk/client-eventbridge": "^3.0.0",
     "@castore/core": "*"

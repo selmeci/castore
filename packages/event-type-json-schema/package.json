@@ -64,15 +64,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/event-type-json-schema/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@castore/core": "*",
     "json-schema-to-ts": "^2.0.0"

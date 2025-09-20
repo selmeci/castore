@@ -13,3 +13,6 @@ yarn.lock
 **/public
 node_modules
 .yarn
+
+/.nx/cache
+/.nx/workspace-data

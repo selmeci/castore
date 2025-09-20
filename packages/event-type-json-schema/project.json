@@ -1,5 +1,6 @@
 {
-  "root": "packages/event-type-json-schema",
+  "name": "event-type-json-schema",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "library",
   "tags": [],
   "implicitDependencies": ["core"]

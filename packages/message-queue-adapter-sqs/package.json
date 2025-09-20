@@ -70,15 +70,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/message-queue-adapter-sqs/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@aws-sdk/client-sqs": "^3.0.0",
     "@castore/core": "*"

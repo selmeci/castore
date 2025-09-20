@@ -74,15 +74,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/message-queue-adapter-sqs-s3/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@aws-sdk/client-s3": "^3.0.0",
     "@aws-sdk/client-sqs": "^3.0.0",

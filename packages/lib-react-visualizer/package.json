@@ -88,15 +88,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/lib-react-visualizer/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@castore/command-json-schema": "*",
     "@castore/core": "*",

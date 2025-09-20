@@ -1,5 +1,6 @@
 {
-  "root": "packages/message-queue-adapter-sqs",
+  "name": "message-queue-adapter-sqs",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "library",
   "tags": [],
   "implicitDependencies": ["core"]

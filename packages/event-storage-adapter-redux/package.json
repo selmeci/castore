@@ -65,15 +65,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/event-storage-adapter-redux/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@castore/core": "*",
     "@reduxjs/toolkit": "^1.9.0",

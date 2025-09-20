@@ -64,14 +64,5 @@
     "Juliette Fournier",
     "Valentin Beggi",
     "Stanislas Hannebelle"
-  ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/core/dist"
-        ]
-      }
-    }
-  }
+  ]
 }
