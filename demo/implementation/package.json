@@ -33,7 +33,7 @@
     "@types/http-errors": "^1.8.2",
     "@types/serverless": "^3.12.27",
     "dependency-cruiser": "^17.0.1",
-    "env-cmd": "^10.1.0",
+    "env-cmd": "^11.0.0",
     "esbuild": "^0.25.10",
     "eslint": "^8.57.1",
     "json-schema-to-ts": "^2.12.0",
