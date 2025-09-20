@@ -37,7 +37,7 @@ export const CommandCard = ({
       const output: unknown = await handler(
         formData,
         requiredEvStores,
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
         ...(context ?? []),
       );
       console.log(output);

@@ -33,12 +33,13 @@ export class ImageParser<EVENT_STORES extends EventStore> {
         '#',
       ) as [string, ...string[]];
 
-      if (this.eventStoresById[eventStoreId] === undefined)
+      if (this.eventStoresById[eventStoreId] === undefined) {
         throw new Error(
           `Unable to detect eventStore from image. Received eventStoreId: ${String(
             eventStoreId,
           )}`,
         );
+      }
 
       const aggregateId = splitAggregateId.join('#');
       const { version, type, timestamp, payload, metadata } = event;

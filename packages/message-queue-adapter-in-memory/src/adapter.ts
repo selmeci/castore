@@ -110,7 +110,9 @@ export class InMemoryMessageQueueAdapter<MESSAGE extends Message = Message>
       );
       this.queue.error((error, task) => {
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (error === null) return;
+        if (error === null) {
+          return;
+        }
 
         const { attempt, retryAttemptsLeft, ...restTask } = task;
 
@@ -126,7 +128,9 @@ export class InMemoryMessageQueueAdapter<MESSAGE extends Message = Message>
 
         setTimeout(() => {
           const queue = this.queue;
-          if (queue === undefined) return;
+          if (queue === undefined) {
+            return;
+          }
 
           void queue.push({
             attempt: attempt + 1,

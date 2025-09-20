@@ -14,7 +14,6 @@ export const getMessageSize = (message: SendMessageRequest): number => {
     for (const [key, attribute] of Object.entries(message.MessageAttributes)) {
       size += Buffer.byteLength(key, 'utf-8');
       for (const attributeValue of Object.values(attribute)) {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
         size += Buffer.byteLength(attributeValue, 'utf-8');
       }
     }

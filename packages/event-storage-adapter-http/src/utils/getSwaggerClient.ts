@@ -7,5 +7,4 @@ export const getSwaggerClient = async ({
   swagger,
 }: {
   swagger: OpenAPI.Document;
-  // eslint-disable-next-line @typescript-eslint/require-await
 }): Promise<SwaggerClient> => new _SwaggerClient({ swagger });
