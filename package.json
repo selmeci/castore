@@ -32,8 +32,8 @@
     "watch": "nx run-many --target=watch --all  --parallel=4"
   },
   "devDependencies": {
-    "@commitlint/cli": "^16.3.0",
-    "@commitlint/config-conventional": "^16.2.4",
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
     "@nrwl/tao": "^14.8.9",
     "@nrwl/workspace": "^14.8.9",
     "@trivago/prettier-plugin-sort-imports": "^5.2.2",
@@ -52,7 +52,7 @@
     "npm-audit-resolver": "^3.0.0-RC.0",
     "nx": "^14.8.9",
     "prettier": "^3.6.2",
-    "syncpack": "^7.2.2",
+    "syncpack": "^13.0.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.2"
   },
