@@ -17,15 +17,15 @@
   "files": [
     "dist"
   ],
-  "main": "dist/cjs/index.js",
-  "module": "dist/esm/index.js",
+  "main": "dist/cjs/index.cjs",
+  "module": "dist/esm/index.mjs",
   "types": "dist/types/index.d.ts",
   "scripts": {
     "lint-fix": "yarn eslint --fix",
     "lint-fix-all": "yarn lint-fix .",
     "package": "rm -rf dist && yarn package-cjs && yarn package-esm && yarn package-types",
-    "package-cjs": "NODE_ENV=cjs yarn transpile --out-dir dist/cjs --source-maps",
-    "package-esm": "NODE_ENV=esm yarn transpile --out-dir dist/esm --source-maps",
+    "package-cjs": "NODE_ENV=cjs yarn transpile --out-dir dist/cjs --source-maps --out-file-extension .cjs",
+    "package-esm": "NODE_ENV=esm yarn transpile --out-dir dist/esm --source-maps --out-file-extension .mjs",
     "package-types": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json",
     "test": "yarn test-type && yarn test-unit && yarn test-circular && yarn test-linter",
     "test-circular": "yarn depcruise --validate .dependency-cruiser.js .",
@@ -57,11 +57,26 @@
     "vite-tsconfig-paths": "^5.1.4",
     "vitest": "^3.2.4"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.mjs",
+      "require": "./dist/cjs/index.cjs",
+      "default": "./dist/esm/index.mjs"
+    },
+    "./*": {
+      "types": "./dist/types/*.d.ts",
+      "import": "./dist/esm/*.mjs",
+      "require": "./dist/cjs/*.cjs",
+      "default": "./dist/esm/*.mjs"
+    }
+  },
   "maintainers": [
     "Thomas Aribart",
     "Charles Géry",
     "Juliette Fournier",
     "Valentin Beggi",
     "Stanislas Hannebelle"
-  ]
+  ],
+  "type": "module"
 }

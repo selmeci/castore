@@ -67,5 +67,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "packageManager": "yarn@4.10.2"
+  "packageManager": "yarn@4.10.2",
+  "type": "module"
 }
