@@ -1,10 +1,9 @@
 // @ts-check
 // Note: type annotations allow type checking and IDEs autocompletion
-
 // @ts-expect-error bad typing
-const lightCodeTheme = require('prism-react-renderer/themes/vsLight');
+import darkCodeTheme from 'prism-react-renderer/themes/vsDark';
 // @ts-expect-error bad typing
-const darkCodeTheme = require('prism-react-renderer/themes/vsDark');
+import lightCodeTheme from 'prism-react-renderer/themes/vsLight';
 
 lightCodeTheme.plain.backgroundColor = '#f8f8f8';
 darkCodeTheme.plain.backgroundColor = '#242424';
@@ -96,4 +95,4 @@ const config = {
     }),
 };
 
-module.exports = config;
+export default config;

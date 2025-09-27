@@ -1,6 +1,6 @@
-const { defineConfig } = require('vitest/config');
+import { defineConfig } from 'vitest/config';
 
-const { testConfig } = require('../../commonConfiguration/vite.config');
+import { testConfig } from '../../commonConfiguration/vite.config';
 
 export default defineConfig({
   test: testConfig,

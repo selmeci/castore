@@ -23,7 +23,7 @@ export default [
   {
     files: ['**/*.{js,mjs,cjs,ts,tsx}'],
     languageOptions: {
-      ecmaVersion: 2018,
+      ecmaVersion: 'latest',
       sourceType: 'module',
       globals: {
         ...globals.browser,
