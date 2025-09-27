@@ -1,12 +1,9 @@
 // @ts-check
 // Note: type annotations allow type checking and IDEs autocompletion
-// @ts-expect-error bad typing
-import darkCodeTheme from 'prism-react-renderer/themes/vsDark';
-// @ts-expect-error bad typing
-import lightCodeTheme from 'prism-react-renderer/themes/vsLight';
+import { themes as prismThemes } from 'prism-react-renderer';
 
-lightCodeTheme.plain.backgroundColor = '#f8f8f8';
-darkCodeTheme.plain.backgroundColor = '#242424';
+prismThemes.vsLight.plain.backgroundColor = '#f8f8f8';
+prismThemes.vsDark.plain.backgroundColor = '#242424';
 
 /** @type {import('@docusaurus/types').Config} */
 const config = {
@@ -28,7 +25,11 @@ const config = {
   projectName: 'castore', // Usually your repo name.
 
   onBrokenLinks: 'warn',
-  onBrokenMarkdownLinks: 'warn',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
+  },
 
   // Even if you don't use internalization, you can use this field to set useful
   // metadata like html lang. For example, if your site is Chinese, you may want
@@ -44,10 +45,10 @@ const config = {
       /** @type {import('@docusaurus/preset-classic').Options} */
       ({
         docs: {
-          sidebarPath: require.resolve('./sidebars.js'),
+          sidebarPath: new URL('./sidebars.js', import.meta.url).pathname,
         },
         theme: {
-          customCss: require.resolve('./src/css/custom.css'),
+          customCss: new URL('./src/css/custom.css', import.meta.url).pathname,
         },
       }),
     ],
@@ -81,8 +82,8 @@ const config = {
         ],
       },
       prism: {
-        theme: lightCodeTheme,
-        darkTheme: darkCodeTheme,
+        theme: prismThemes.vsLight,
+        darkTheme: prismThemes.vsDark,
       },
       algolia: {
         // The application ID provided by Algolia
