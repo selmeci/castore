@@ -1,6 +1,6 @@
 import BrowserOnly from '@docusaurus/BrowserOnly';
 import Layout from '@theme/Layout';
-import React from 'react';
+import React, { JSX } from 'react';
 
 import { tuple } from '@castore/core';
 import {
@@ -21,9 +21,7 @@ const VisualizerPage = (): JSX.Element => (
   >
     <BrowserOnly>
       {() => {
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-var-requires
         const Visualizer = require('@castore/lib-react-visualizer').Visualizer;
-        // eslint-disable-next-line @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-var-requires
         const uuid = require('uuid').v4 as () => string;
 
         return (

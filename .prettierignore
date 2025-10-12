@@ -11,3 +11,8 @@ yarn.lock
 **/dist
 **/build
 **/public
+node_modules
+.yarn
+
+/.nx/cache
+/.nx/workspace-data

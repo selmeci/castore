@@ -1,6 +1,4 @@
 /* eslint-disable complexity */
-
-/* eslint-disable max-lines */
 import type { SerializableParameter } from 'postgres';
 import postgres from 'postgres';
 
@@ -177,8 +175,12 @@ export class PostgresEventStorageAdapter implements EventStorageAdapter {
       metadata: event.metadata as unknown | null,
       timestamp: (event.timestamp as Date).toISOString(),
     };
-    if (!eventDetail.payload) delete eventDetail.payload;
-    if (!eventDetail.metadata) delete eventDetail.metadata;
+    if (!eventDetail.payload) {
+      delete eventDetail.payload;
+    }
+    if (!eventDetail.metadata) {
+      delete eventDetail.metadata;
+    }
 
     return eventDetail as EventDetail;
   }
@@ -189,8 +191,12 @@ export class PostgresEventStorageAdapter implements EventStorageAdapter {
   ): Promise<{ event: EventDetail }> {
     const { aggregateId, version, type, payload, metadata, timestamp } =
       eventDetail;
-    if (payload) assertIsSerializableParameter(payload);
-    if (metadata) assertIsSerializableParameter(metadata);
+    if (payload) {
+      assertIsSerializableParameter(payload);
+    }
+    if (metadata) {
+      assertIsSerializableParameter(metadata);
+    }
 
     const onForced = () => this._sql`
     	ON CONFLICT (aggregate_name, aggregate_id, version)
@@ -325,8 +331,9 @@ export class PostgresEventStorageAdapter implements EventStorageAdapter {
           groupedEvent.eventStorageAdapter instanceof
           PostgresEventStorageAdapter
         )
-      )
+      ) {
         return true;
+      }
 
       return false;
     });
@@ -351,8 +358,12 @@ export class PostgresEventStorageAdapter implements EventStorageAdapter {
           throw new Error('Event store ID (Aggregate name) is required');
         }
 
-        if (payload) assertIsSerializableParameter(payload);
-        if (metadata) assertIsSerializableParameter(metadata);
+        if (payload) {
+          assertIsSerializableParameter(payload);
+        }
+        if (metadata) {
+          assertIsSerializableParameter(metadata);
+        }
 
         const payloadValue = (payload as SerializableParameter) ?? null;
         const metadataValue = (metadata as SerializableParameter) ?? null;
@@ -441,6 +452,7 @@ export class PostgresEventStorageAdapter implements EventStorageAdapter {
       try {
         pageTokenParsed = JSON.parse(inputOptions.pageToken) as ParsedPageToken;
       } catch (error) {
+        console.error(error);
         throw new Error('Invalid page token');
       }
     }

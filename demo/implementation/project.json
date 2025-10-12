@@ -1,5 +1,6 @@
 {
-  "root": "demo/implementation",
+  "name": "demo-implementation",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "application",
   "tags": [],
   "implicitDependencies": ["core"]

@@ -1,6 +1,6 @@
 import { TabContext, TabList, TabPanel } from '@mui/lab';
 import { Tab } from '@mui/material';
-import React, { useState } from 'react';
+import React, { useState, JSX } from 'react';
 
 import type { EventStore } from '@castore/core';
 
@@ -15,7 +15,9 @@ export const DB = ({
 }): JSX.Element => {
   const [selectedEventStoreId, selectEventStoreId] = useState(eventStoreIds[0]);
 
-  if (selectedEventStoreId === undefined) return <></>;
+  if (selectedEventStoreId === undefined) {
+    return <></>;
+  }
 
   return (
     <TabContext value={selectedEventStoreId}>
@@ -33,7 +35,9 @@ export const DB = ({
       {eventStoreIds.map(eventStoreId => {
         const eventStore = eventStoresById[eventStoreId];
 
-        if (eventStore === undefined) return <></>;
+        if (eventStore === undefined) {
+          return <></>;
+        }
 
         return (
           <TabPanel key={eventStoreId} value={eventStoreId}>

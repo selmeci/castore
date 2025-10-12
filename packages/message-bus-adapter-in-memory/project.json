@@ -1,5 +1,6 @@
 {
-  "root": "packages/message-bus-adapter-in-memory",
+  "name": "message-bus-adapter-in-memory",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "library",
   "tags": [],
   "implicitDependencies": ["core"]

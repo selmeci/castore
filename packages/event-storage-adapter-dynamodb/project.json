@@ -1,5 +1,6 @@
 {
-  "root": "packages/event-storage-adapter-dynamodb",
+  "name": "event-storage-adapter-dynamodb",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "library",
   "tags": [],
   "implicitDependencies": ["core"]

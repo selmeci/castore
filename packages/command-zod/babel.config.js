@@ -1,3 +1,3 @@
-const commonBabelConfig = require('../../commonConfiguration/babel.config');
+import commonBabelConfig from '../../commonConfiguration/babel.config.js';
 
-module.exports = commonBabelConfig();
+export default commonBabelConfig();

@@ -18,49 +18,62 @@
   "files": [
     "dist"
   ],
-  "main": "dist/cjs/index.js",
-  "module": "dist/esm/index.js",
+  "main": "dist/cjs/index.cjs",
+  "module": "dist/esm/index.mjs",
   "types": "dist/types/index.d.ts",
   "scripts": {
-    "lint-fix": "yarn linter-base-config --fix",
+    "lint-fix": "yarn eslint --fix",
     "lint-fix-all": "yarn lint-fix .",
-    "linter-base-config": "eslint --ext=js,ts",
     "package": "rm -rf dist && yarn package-cjs && yarn package-esm && yarn package-types",
-    "package-cjs": "NODE_ENV=cjs yarn transpile --out-dir dist/cjs --source-maps",
-    "package-esm": "NODE_ENV=esm yarn transpile --out-dir dist/esm --source-maps",
+    "package-cjs": "NODE_ENV=cjs yarn transpile --out-dir dist/cjs --source-maps --out-file-extension .cjs",
+    "package-esm": "NODE_ENV=esm yarn transpile --out-dir dist/esm --source-maps --out-file-extension .mjs",
     "package-types": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json",
     "test": "yarn test-type && yarn test-unit && yarn test-circular && yarn test-linter",
-    "test-circular": "yarn depcruise --validate dependency-cruiser.js .",
-    "test-linter": "yarn linter-base-config .",
+    "test-circular": "yarn depcruise --validate .dependency-cruiser.js .",
+    "test-linter": "yarn eslint .",
     "test-type": "tsc --noEmit --emitDeclarationOnly false",
     "test-unit": "yarn vitest run --passWithNoTests",
     "transpile": "babel src --extensions .ts --quiet",
     "watch": "rm -rf dist && concurrently 'yarn:package-* --watch'"
   },
   "dependencies": {
-    "throttled-queue": "^2.1.4"
+    "throttled-queue": "^3.0.0"
   },
   "devDependencies": {
-    "@babel/cli": "^7.17.6",
-    "@babel/core": "^7.17.9",
-    "@babel/plugin-transform-runtime": "^7.17.0",
-    "@babel/preset-env": "^7.16.11",
-    "@babel/preset-typescript": "^7.16.7",
+    "@babel/cli": "^7.28.3",
+    "@babel/core": "^7.28.4",
+    "@babel/plugin-transform-runtime": "^7.28.3",
+    "@babel/preset-env": "^7.28.3",
+    "@babel/preset-typescript": "^7.27.1",
     "@castore/core": "workspace:",
     "@castore/demo-blueprint": "workspace:",
     "@castore/lib-test-tools": "workspace:",
     "@castore/message-queue-adapter-in-memory": "workspace:",
-    "@types/node": "^17.0.29",
+    "@types/node": "^24.5.2",
     "babel-plugin-module-resolver": "^4.1.0",
-    "concurrently": "^7.1.0",
-    "dependency-cruiser": "^11.7.0",
-    "eslint": "^8.14.0",
-    "prettier": "^2.6.2",
-    "ts-node": "^10.7.0",
-    "tsc-alias": "^1.8.7",
-    "typescript": "^4.6.3",
-    "vite-tsconfig-paths": "^4.0.3",
-    "vitest": "^0.26.2"
+    "concurrently": "^9.2.1",
+    "dependency-cruiser": "^17.0.1",
+    "eslint": "^9.36.0",
+    "prettier": "^3.6.2",
+    "ts-node": "^10.9.2",
+    "tsc-alias": "^1.8.16",
+    "typescript": "^5.9.2",
+    "vite-tsconfig-paths": "^5.1.4",
+    "vitest": "^3.2.4"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.mjs",
+      "require": "./dist/cjs/index.cjs",
+      "default": "./dist/esm/index.mjs"
+    },
+    "./*": {
+      "types": "./dist/types/*.d.ts",
+      "import": "./dist/esm/*.mjs",
+      "require": "./dist/cjs/*.cjs",
+      "default": "./dist/esm/*.mjs"
+    }
   },
   "maintainers": [
     "Thomas Aribart",
@@ -69,16 +82,8 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "nx": {
-    "targets": {
-      "package": {
-        "outputs": [
-          "packages/lib-dam/dist"
-        ]
-      }
-    }
-  },
   "peerDependencies": {
     "@castore/core": "*"
-  }
+  },
+  "type": "module"
 }

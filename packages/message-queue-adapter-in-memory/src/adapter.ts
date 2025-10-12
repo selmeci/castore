@@ -29,18 +29,18 @@ export type InMemoryQueueMessage<
   | NotificationMessageQueue extends MESSAGE_QUEUE
   ? Message
   : MESSAGE_QUEUE extends StateCarryingMessageQueue
-  ? EventStoreStateCarryingMessage<
-      MessageChannelSourceEventStores<MESSAGE_QUEUE>
-    >
-  : MESSAGE_QUEUE extends NotificationMessageQueue
-  ? EventStoreNotificationMessage<
-      MessageChannelSourceEventStores<MESSAGE_QUEUE>
-    >
-  : MESSAGE_QUEUE extends AggregateExistsMessageQueue
-  ? EventStoreAggregateExistsMessage<
-      MessageChannelSourceEventStores<MESSAGE_QUEUE>
-    >
-  : never;
+    ? EventStoreStateCarryingMessage<
+        MessageChannelSourceEventStores<MESSAGE_QUEUE>
+      >
+    : MESSAGE_QUEUE extends NotificationMessageQueue
+      ? EventStoreNotificationMessage<
+          MessageChannelSourceEventStores<MESSAGE_QUEUE>
+        >
+      : MESSAGE_QUEUE extends AggregateExistsMessageQueue
+        ? EventStoreAggregateExistsMessage<
+            MessageChannelSourceEventStores<MESSAGE_QUEUE>
+          >
+        : never;
 
 export type TaskContext = {
   attempt: number;
@@ -110,7 +110,9 @@ export class InMemoryMessageQueueAdapter<MESSAGE extends Message = Message>
       );
       this.queue.error((error, task) => {
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (error === null) return;
+        if (error === null) {
+          return;
+        }
 
         const { attempt, retryAttemptsLeft, ...restTask } = task;
 
@@ -126,7 +128,9 @@ export class InMemoryMessageQueueAdapter<MESSAGE extends Message = Message>
 
         setTimeout(() => {
           const queue = this.queue;
-          if (queue === undefined) return;
+          if (queue === undefined) {
+            return;
+          }
 
           void queue.push({
             attempt: attempt + 1,

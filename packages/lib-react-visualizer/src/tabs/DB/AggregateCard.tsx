@@ -1,4 +1,4 @@
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { ExpandMore } from '@mui/icons-material';
 import {
   Accordion,
   AccordionDetails,
@@ -10,7 +10,7 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
-import React, { useState } from 'react';
+import React, { useState, JSX } from 'react';
 
 import type { EventStore } from '@castore/core';
 import { useAggregateEvents } from '@castore/event-storage-adapter-redux';
@@ -62,7 +62,7 @@ export const AggregateCard = ({
             <JsonView src={aggregate} />
             <Accordion variant="outlined" sx={{ backgroundColor: '#f9f9f9' }}>
               <AccordionSummary
-                expandIcon={<ExpandMoreIcon />}
+                expandIcon={<ExpandMore />}
                 aria-controls="panel1a-content"
                 id="panel1a-header"
               >
@@ -80,7 +80,7 @@ export const AggregateCard = ({
                         variant="outlined"
                       >
                         <AccordionSummary
-                          expandIcon={<ExpandMoreIcon />}
+                          expandIcon={<ExpandMore />}
                           aria-controls="panel1a-content"
                           id="panel1a-header"
                         >

@@ -4,13 +4,13 @@ IFS=$'\n\t'
 
 set -u
 
-replace() {
-    cat workspace.json | jq ".projects[\"$1\"]"
+get_path() {
+    yarn nx show project $1 --web false --json | jq -r '.root'
 }
 
-export -f replace
+export -f get_path
 
-readonly AFFECTED_STRING=$(yarn nx affected:libs --plain)
+readonly AFFECTED_STRING=$(yarn nx show projects --affected --type lib)
 readonly AFFECTED_ARRAY=($(echo "$AFFECTED_STRING" | tr ' ' '\n'))
 
 RESULT=''
@@ -22,9 +22,9 @@ fi
 
 for app in "${AFFECTED_ARRAY[@]}"; do
     if [[ -z "${RESULT}" ]]; then
-        RESULT=$(replace "$app")
+        RESULT=\"$(get_path "$app")\"
     else
-        RESULT="$RESULT,$(replace "$app")"
+        RESULT="$RESULT,\"$(get_path "$app")\""
     fi
 done
 

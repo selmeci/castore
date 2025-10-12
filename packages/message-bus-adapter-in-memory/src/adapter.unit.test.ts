@@ -257,14 +257,12 @@ describe('in-memory message queue adapter', () => {
     for (let attempt = 1; attempt <= retryAttempts; attempt++) {
       testWaitTime += retryDelayInMs * Math.pow(retryBackoffRate, attempt - 1);
 
-      // eslint-disable-next-line @typescript-eslint/require-await
       failingHandler.mockImplementationOnce(async () => {
         failingHandlerExecutionsDates.push(new Date());
         throw new Error();
       });
     }
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     failingHandler.mockImplementationOnce(async () => {
       failingHandlerExecutionsDates.push(new Date());
     });

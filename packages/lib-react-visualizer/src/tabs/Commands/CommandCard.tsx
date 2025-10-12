@@ -1,4 +1,4 @@
-import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import { ExpandMore } from '@mui/icons-material';
 import {
   Accordion,
   AccordionDetails,
@@ -8,7 +8,7 @@ import {
 } from '@mui/material';
 import type { IChangeEvent } from '@rjsf/core';
 import validator from '@rjsf/validator-ajv8';
-import React from 'react';
+import React, { JSX } from 'react';
 
 import type { JSONSchemaCommand } from '@castore/command-json-schema';
 import type { EventStore } from '@castore/core';
@@ -37,7 +37,7 @@ export const CommandCard = ({
       const output: unknown = await handler(
         formData,
         requiredEvStores,
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+
         ...(context ?? []),
       );
       console.log(output);
@@ -62,7 +62,7 @@ export const CommandCard = ({
   return (
     <Accordion>
       <AccordionSummary
-        expandIcon={<ExpandMoreIcon />}
+        expandIcon={<ExpandMore />}
         aria-controls="panel1a-content"
         id="panel1a-header"
       >

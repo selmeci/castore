@@ -10,7 +10,7 @@ on:
 
 env:
   CI: true
-  NODE_VERSION: 16
+  NODE_VERSION: 22
 
 defaults:
   run:
@@ -46,12 +46,12 @@ jobs:
     name: 🎯 Run Tests
     needs: build
     runs-on: ubuntu-latest
-    if: join(fromJson(needs.build.outputs.affected-packages)) != ''
+    if: join(fromJSON(needs.build.outputs.affected-packages)) != ''
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        AFFECTED_LIB: ${{ fromJson(needs.build.outputs.affected-packages) }}
+        AFFECTED_LIB: ${{ fromJSON(needs.build.outputs.affected-packages) }}
     steps:
       - uses: actions/checkout@v3
         with:

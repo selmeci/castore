@@ -136,8 +136,9 @@ export class ReduxEventStorageAdapter implements EventStorageAdapter {
     ) => {
       const eventStoreState = this.store.getState()[eventStoreSliceName];
 
-      if (eventStoreState === undefined)
+      if (eventStoreState === undefined) {
         throw new ReduxStateNotFoundError({ eventStoreSliceName });
+      }
 
       return eventStoreState;
     };

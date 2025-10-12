@@ -1,5 +1,6 @@
 {
-  "root": "packages/message-bus-adapter-event-bridge",
+  "name": "message-bus-adapter-event-bridge",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "projectType": "library",
   "tags": [],
   "implicitDependencies": ["core"]

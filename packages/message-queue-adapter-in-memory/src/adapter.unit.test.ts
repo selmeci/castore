@@ -191,6 +191,7 @@ describe('in-memory message queue adapter', () => {
 
     it('correctly instanciates a class and attach it (with worker)', async () => {
       InMemoryMessageQueueAdapter.attachTo(messageQueue, {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars -- for type checking
         worker: message =>
           new Promise(resolve => {
             const assertMessage: A.Equals<typeof message, ExpectedMessage> = 1;
@@ -200,6 +201,7 @@ describe('in-memory message queue adapter', () => {
           }),
       });
 
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars -- for type checking
       const inMemoryMessageQueueAdapter = InMemoryMessageQueueAdapter.attachTo(
         messageQueue,
         { worker },
@@ -235,14 +237,12 @@ describe('in-memory message queue adapter', () => {
     for (let attempt = 1; attempt <= retryAttempts; attempt++) {
       testWaitTime += retryDelayInMs * Math.pow(retryBackoffRate, attempt - 1);
 
-      // eslint-disable-next-line @typescript-eslint/require-await
       worker.mockImplementationOnce(async () => {
         workerExecutionsDates.push(new Date());
         throw new Error();
       });
     }
 
-    // eslint-disable-next-line @typescript-eslint/require-await
     worker.mockImplementationOnce(async () => {
       workerExecutionsDates.push(new Date());
     });
