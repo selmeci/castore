@@ -503,6 +503,8 @@ The baseline explicitly excludes: type-level reducer contracts, schema migration
 | F25 — Observability | ❌ | ⚠️ | ✅ | ✅ | 🔶 | ⚠️ |
 | F26 — Testing utilities | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 
+*Castore column sourced from §4 code audit (2026-04-16). Competitor columns sourced from §3.1–§3.4 documentation reviews (2026-04-16). Cells marked ⚠️ should be re-verified during per-gap brainstorming before relying on them for implementation decisions.*
+
 ---
 
 ### 3.7 Competitors deliberately excluded
