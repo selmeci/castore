@@ -1,7 +1,7 @@
 # Castore ES Gap Analysis & Roadmap
 
 - **Date:** 2026-04-16
-- **Status:** Draft — Chunk 1 in progress
+- **Status:** Draft — Chunks 1 and 2 complete
 - **Owner:** Roman Selmeci
 - **Spec:** `docs/superpowers/specs/2026-04-16-castore-es-gap-analysis-design.md`
 
@@ -321,7 +321,7 @@ Evidence:          Absence confirmed on 2026-04-16 via:
                    (1) Code grep `checkpoint|lastProcessed|resumeFrom|subscription|projectionRunner` across packages/**/src/**/*.ts → 0 matches in in-scope packages.
                    (2) Docs grep same patterns across docs/docs/**/*.md → 0 matches.
                    (3) Package-metadata grep → 0 matches.
-                   Confidence: high.
+                   Confidence: medium.
 How it works:      Not implemented. There is no pull-based catch-up loop, no checkpoint table, and no projection runner concept in any in-scope package. The only event-distribution mechanism is push-based: ConnectedEventStore.pushEvent (packages/core/src/connectedEventStore/connectedEventStore.ts:134–140) publishes to a message channel after the event write. A consumer that misses a message has no catch-up mechanism within the framework.
 Guarantees:        None.
 Known limits:      Any projection or read-model worker must subscribe to the message bus and handle its own missed-event recovery. If the bus delivers at-least-once and the consumer crashes, replaying missed events requires out-of-band tooling (lib-dam, which is out of scope). There is no framework guarantee that all events reach projections.
@@ -377,7 +377,7 @@ Evidence:          packages/core/src/eventStore/eventStore.ts:206–215 (onEvent
                    packages/core/src/eventStore/eventStore.ts:42–109 (pushEventGroup also calls onEventPushed per event after the DB transaction commits)
 How it works:      The EventStore constructor accepts an optional onEventPushed callback (packages/core/src/eventStore/eventStore.ts:206–215). This callback is invoked synchronously within the pushEvent flow after the adapter write returns, allowing a caller to update a read model before pushEvent returns to the command handler. However, this callback fires *after* the adapter write (not in the same DB transaction), making it a post-commit hook rather than a true transactional inline projection. A crash between the adapter write and the callback leaves the read model stale.
 Guarantees:        Convention-only. There is no test enforcing that onEventPushed is called before pushEvent returns to the user in all code paths. The callback's failure does not roll back the event write (no compensating transaction).
-Known limits:      Not truly "in same DB transaction" — the callback fires after the adapter write completes. For a Postgres-backed store, writing to a read model inside onEventPushed requires a separate DB connection or transaction, breaking the atomicity guarantee of a true inline projection. This is the userland pattern the framework supports, not an integrated feature.
+Known limits:      Not truly "in same DB transaction" — the callback fires after the adapter write completes. For a Postgres-backed store, writing to a read model inside onEventPushed requires a separate DB connection or transaction, breaking the atomicity guarantee of a true inline projection. This is the userland pattern the framework supports, not an integrated feature. Classified ⚠️ rather than ❌ because an `onEventPushed` extension point exists as a userland convention; a transactionally-coupled inline projection is not achievable through the current contract.
 Finance fit note:  Useful for simple derived state (e.g. updating an account balance table) but risky for financial use cases where the read model must be transactionally consistent with the event log. A crash window exists between event write and read-model update.
 ```
 
@@ -432,7 +432,7 @@ Evidence:          Absence confirmed on 2026-04-16 via:
                    (1) Code grep `upcast|upcaster|migrate.*event|transform.*event|schemaVersion` across packages/**/src/**/*.ts → 0 matches.
                    (2) Docs grep same patterns across docs/docs/**/*.md → 0 matches.
                    (3) Package-metadata grep → 0 matches.
-                   Confidence: high.
+                   Confidence: medium.
 How it works:      Not implemented. getEvents (packages/core/src/eventStorageAdapter.ts:34–38) returns raw EventDetail objects as stored; there is no read-time transformation layer. A consumer receiving an old-schema event must handle the old shape directly. There is no registered pipeline of (eventType, versionFrom, versionTo) → transform functions anywhere in core or the adapters.
 Guarantees:        None.
 Known limits:      Without upcasters, any change to event payload structure requires either: (a) keeping all old event handlers in the application forever, or (b) a one-off migration script that rewrites stored events (violating append-only). Both approaches are error-prone over a 5-year horizon. This is a SHOULD-have gap for N6.
@@ -559,7 +559,7 @@ Evidence:          Absence confirmed on 2026-04-16 via:
                    (1) Code grep `DLQ|dead.letter|deadLetter|poison|maxReceiveCount|retryPolicy` across packages/**/src/**/*.ts → 0 matches in in-scope packages.
                    (2) Docs grep → 0 matches.
                    (3) Package-metadata grep → 0 matches.
-                   Confidence: high. DLQ support exists at the AWS EventBridge/SQS infrastructure level, but castore has no API surface for it.
+                   Confidence: medium. DLQ support exists at the AWS EventBridge/SQS infrastructure level, but castore has no API surface for it.
 How it works:      Not implemented at the framework level. The EventBridge adapter (packages/message-bus-adapter-event-bridge/src/adapter.ts) sends PutEvents with no retry configuration or failure callback. If a consumer Lambda throws, the retry behaviour is controlled entirely by EventBridge rule settings or SQS queue configuration — not by castore. There is no framework API to configure max retries, DLQ target, or failure reason capture.
 Guarantees:        None from castore. AWS infrastructure provides DLQ routing but the application must configure it manually via CDK/CloudFormation.
 Known limits:      Without framework-level DLQ convention, a poison-pill event (e.g. one that always throws a deserialization error) will retry indefinitely at the AWS level without surfacing to the application. No structured failure reason is captured by castore alongside the original message.
@@ -601,7 +601,7 @@ Evidence:          Absence confirmed on 2026-04-16 via:
                    (1) Code grep `encrypt.*event|payload.*encrypt|pgcrypto|encrypt` across packages/**/src/**/*.ts → 0 matches.
                    (2) Docs grep → 0 matches.
                    (3) Package-metadata grep → 0 matches.
-                   Confidence: high. Postgres TDE / AWS RDS encryption at rest is an infrastructure concern outside the framework.
+                   Confidence: medium. Postgres TDE / AWS RDS encryption at rest is an infrastructure concern outside the framework.
 How it works:      Not implemented at the framework level. Events are stored as plaintext JSONB (packages/event-storage-adapter-postgres/src/adapter.ts:122). Encryption at rest is an infrastructure-layer responsibility: AWS RDS supports transparent encryption of storage volumes, which protects against physical media access. The framework provides no payload-level encryption that would protect data from a compromised DB admin or application user.
 Guarantees:        None from castore.
 Known limits:      Framework-level payload encryption (distinct from TDE) would provide an additional layer of protection for sensitive fields even when the DB is accessible via SQL. The current design relies entirely on infrastructure-layer controls. Note: implementing this correctly typically requires a key-management service and adds complexity to the read path (decrypt on getEvents).
@@ -675,7 +675,7 @@ Evidence:          Absence confirmed on 2026-04-16 via:
                    (1) Code grep `trace|span|opentelemetry|otel|logger|metric` across packages/**/src/**/*.ts in in-scope packages → 0 matches.
                    (2) Docs grep → 0 matches.
                    (3) Package-metadata grep → 0 matches.
-                   Confidence: high.
+                   Confidence: medium.
 How it works:      Not implemented. The event store, adapters, and message bus do not emit any structured logs, OpenTelemetry spans, or metrics. There is no hook point for injecting a tracer or logger into the framework. Observability is entirely a userland concern: application code wraps each pushEvent or getAggregate call with its own spans.
 Guarantees:        None.
 Known limits:      Without framework-native observability, event commit latency, projection lag, and outbox queue depth are invisible to operators. Each team re-implements the same push/get instrumentation boilerplate. The absence of a hook point (e.g. an optional `onEvent` middleware) makes library-level tracing hard to add without forking core.
@@ -710,7 +710,7 @@ The gaps catalogued above are real and must be closed before production use. But
 
 - **`simulateAggregate` / `simulateSideEffect` enable dry-run pre-trade checks without persistence.** `EventStore.simulateAggregate` (Feature 26 — `packages/core/src/eventStore/eventStore.ts:269-296`) reconstructs aggregate state from a caller-supplied event sequence entirely in memory and returns the projected state, with no adapter call. This is precisely the primitive needed for pre-trade validation — "would this command violate an invariant?" — without side effects, without touching the DB, and without polluting the event log. See §4 Feature 26 for full evidence.
 
-- **Strict type-level reducer contracts make event-type typos a compile error, not a runtime surprise.** The `EventStore` generic ties its reducer directly to the narrowed union of `EventDetail` types declared for that store. A handler for `'ACCOUNT_DEBIITED'` (mis-spelled) is a TypeScript error at the point of declaration, not a silent no-op at runtime. This guarantee is enforced by the type-level contracts in `packages/core/src/event/eventType.ts` and exercised by `.type.test.ts` files (Feature 2 — `packages/core/src/event/eventDetail.ts:14`). In a financial context, where a missed event handler means a silently incorrect balance, this compile-time safety net has direct monetary value. See §4 Feature 2 for full evidence.
+- **Strict type-level reducer contracts make event-type typos a compile error, not a runtime surprise.** The `EventStore` generic ties its reducer directly to the narrowed union of `EventDetail` types declared for that store. A handler for `'ACCOUNT_DEBIITED'` (mis-spelled) is a TypeScript error at the point of declaration, not a silent no-op at runtime. This guarantee is enforced by the type-level contracts in `packages/core/src/event/eventType.ts` and exercised by `.type.test.ts` files (Feature 2 — `packages/core/src/eventStore/eventStore.ts:35`). In a financial context, where a missed event handler means a silently incorrect balance, this compile-time safety net has direct monetary value. See §4 Feature 2 for full evidence.
 
 - **Version-based OCC is baked into the adapter contract, not a userland add-on.** The `EventStorageAdapter` interface makes `pushEvent` raise `EventAlreadyExistsError` on version collision as a first-class typed error, not an undifferentiated exception. The Postgres adapter enforces it via a DB-level `UNIQUE` constraint so that even a direct SQL client bypassing the framework layer is caught. This means concurrent payment commands cannot silently double-book; the second writer receives a typed, retryable conflict signal. See §4 Feature 2 for full evidence.
 
@@ -731,7 +731,7 @@ The gaps catalogued above are real and must be closed before production use. But
 
 ## 8. Appendices
 
-> TODO: see spec §8 for template (sections §8.2 onward).
+> §8.1 filled below; subsections §8.2 (competitor references) and §8.3 (glossary) populated later per plan Task 7.1.
 
 ### 8.1 Upstream signals
 
