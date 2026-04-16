@@ -209,8 +209,497 @@ Testing utilities are framework-provided helpers that make it easy to write fast
 
 ## 4. Castore current state — per feature
 
-> TODO: see spec §4 for template.
-> TODO: reuse F-numbers from §2 verbatim.
+---
+
+### Category A — Storage & consistency
+
+**Category A tally:** castore — 3/5 ✅ · 0/5 🔶 · 0/5 ⚠️ · 2/5 ❌ (F4 idempotent writes absent, F5 snapshots absent)
+
+---
+
+### Feature 1 — Append-only event log
+
+```
+Status:            ✅
+Layer:             core + postgres-adapter + in-memory-adapter
+Evidence:          packages/event-storage-adapter-postgres/src/adapter.ts:115-129 (UNIQUE constraint on aggregate_name+aggregate_id+version);
+                   packages/event-storage-adapter-postgres/src/adapter.ts:244-258 (pushEvent raises PostgresEventAlreadyExistsError on PG error 23505);
+                   packages/event-storage-adapter-in-memory/src/adapter.ts:148-169 (pushEventSync rejects duplicate version unless force=true);
+                   packages/core/src/eventStorageAdapter.ts:39-43 (pushEvent interface — no delete/update operation defined)
+How it works:      The EventStorageAdapter interface exposes only getEvents, pushEvent, pushEventGroup, and listAggregateIds — no update or delete operations. The Postgres adapter enforces append-only via a UNIQUE(aggregate_name, aggregate_id, version) constraint defined at table-creation time. The in-memory adapter enforces the same invariant in pushEventSync by checking for an existing event at the same version. Both adapters raise an EventAlreadyExistsError on violation, preventing silent overwrites.
+Guarantees:        Test-covered: adapter.unit.test.ts files for both Postgres and in-memory adapters cover the conflict path. The adapter interface contract (packages/core/src/eventStorageAdapter.ts) encodes the absence of mutating operations at the type level.
+Known limits:      The force=true option on PushEventOptions (packages/core/src/eventStorageAdapter.ts:13–14) bypasses the append-only guarantee by converting the INSERT into an UPSERT (ON CONFLICT DO UPDATE). This is intentional for replay/backfill scenarios but means append-only is a convention, not an absolute DB-level constraint when force is used. No caller-side guard prevents accidental force=true in production code.
+Finance fit note:  The regulatory audit trail requirement (D1) depends directly on this guarantee. The UNIQUE constraint at the Postgres level is the strongest safeguard; the in-memory adapter is test-only and consistent with it. The force=true escape hatch must be access-controlled at the application layer.
+```
+
+---
+
+### Feature 2 — Version-based optimistic concurrency (OCC)
+
+```
+Status:            ✅
+Layer:             core + postgres-adapter + in-memory-adapter
+Evidence:          packages/event-storage-adapter-postgres/src/adapter.ts:237-258 (INSERT catches PG error 23505 and re-raises as PostgresEventAlreadyExistsError with aggregateId+version);
+                   packages/core/src/eventStore/errors/eventAlreadyExists.ts:1-17 (EventAlreadyExistsError interface with aggregateId and version fields);
+                   packages/event-storage-adapter-in-memory/src/adapter.ts:148-164 (version collision check in pushEventSync);
+                   packages/core/src/eventStore/eventStore.ts:187-215 (EventStore.pushEvent passes caller-supplied version through to adapter)
+How it works:      Each event carries a caller-supplied version number (packages/core/src/event/eventDetail.ts:14). The Postgres adapter relies on the UNIQUE(aggregate_name, aggregate_id, version) constraint to atomically detect concurrent writes: a second writer using the same version receives Postgres error 23505, which the adapter translates into EventAlreadyExistsError. The in-memory adapter performs the same check explicitly. The application layer reads the current version via getAggregate, increments, and passes it to pushEvent; the store rejects it if another writer committed between the read and the push.
+Guarantees:        The error type (EventAlreadyExistsError) is a stable, typed contract exported from core. Test coverage in both adapter unit-test files validates the conflict path. Type-level: version is a required number on EventDetail (eventDetail.ts:14).
+Known limits:      There is no built-in retry helper in core; callers must implement retry-on-conflict themselves. The expectedVersion convention is implicit (caller must read then write) rather than an explicit API parameter; a caller who never reads the current version can silently overwrite events if the conflict happens not to fire. No test validates the retry path end-to-end.
+Finance fit note:  OCC is the primary defence against double-booking in concurrent payment commands. The absence of a built-in retry helper is a userland gap but not a framework deficiency; adding one is low-effort (S) and can be done in application code.
+```
+
+---
+
+### Feature 3 — Multi-aggregate transactional commit
+
+```
+Status:            ✅
+Layer:             core + postgres-adapter
+Evidence:          packages/core/src/eventStore/eventStore.ts:42-109 (EventStore.static pushEventGroup implementation);
+                   packages/core/src/eventStorageAdapter.ts:43-47 (pushEventGroup in the adapter interface);
+                   packages/event-storage-adapter-postgres/src/adapter.ts:306-437 (pushEventGroup wraps all inserts in this._sql.begin(async transaction => {...}));
+                   packages/event-storage-adapter-postgres/src/adapter.ts:328-345 (adapter type-guard: all grouped events must use PostgresEventStorageAdapter — throws if not)
+How it works:      EventStore.pushEventGroup is a static method that accepts one or more GroupedEvent objects (each carrying its own event detail, event store context, and adapter reference). The Postgres adapter implements pushEventGroup by wrapping all INSERT statements in a single postgres.js transaction (this._sql.begin). If any INSERT fails — including a version conflict — the entire transaction is rolled back. The static method then calls each store's onEventPushed callback after the transaction succeeds, enabling downstream bus publication per stream.
+Guarantees:        The transaction boundary is enforced by the Postgres driver (postgres.js begin/rollback). Test-covered: adapter.unit.test.ts exercises the group insert path. The adapter guard (hasABadAdapter check) ensures all events in a group belong to the same Postgres instance, preventing partial commits across heterogeneous adapters.
+Known limits:      The single-adapter constraint (line 328–345: all grouped events must share one PostgresEventStorageAdapter instance) means cross-region or cross-database transactional commits are not possible. The in-memory adapter's pushEventGroup uses a manual rollback loop (packages/event-storage-adapter-in-memory/src/adapter.ts:195–226) — not a true atomic transaction; safe only for testing.
+Finance fit note:  Critical for double-entry bookkeeping (D1): a debit event on an account stream and a credit event on another must commit atomically. This is one of castore's strongest features for the finance profile.
+```
+
+---
+
+### Feature 4 — Idempotent writes
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `idempoten|dedup|correlationToken|idempotencyKey` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep same patterns across docs/docs/**/*.md → 0 matches.
+                   (3) Package-metadata grep of description+keywords in all 8 in-scope packages/*/package.json → 0 matches.
+                   Confidence: high. Feature is named in Vernon IDDD ch. 8; all three searches returned zero.
+How it works:      Not implemented. There is no idempotency-key field on the event envelope (packages/core/src/event/eventDetail.ts:3–22 — fields are aggregateId, version, type, timestamp, payload, metadata only). The EventStorageAdapter interface defines no deduplication semantics. The only form of "you cannot push this twice" is the version-based OCC collision (F2), which prevents two pushes at the same version — a different guarantee from idempotency-by-key.
+Guarantees:        None. Retry of a failed pushEvent may produce a duplicate event at the next version number if the original write succeeded at the DB level but the response was lost.
+Known limits:      Network-level retries without idempotency keys create duplicate events, which in a financial system means duplicate charges or credits. This is a critical gap (Finance: N4 zero event loss + exact-once semantics). Userland workaround requires a separate idempotency table or using the command ID as the aggregate ID prefix.
+Finance fit note:  MUST-have for D1 (financial payments). A retried payment command that pushes event v=3 a second time produces a real monetary duplicate. No framework-level mitigation exists; each command handler team must implement its own dedup.
+```
+
+---
+
+### Feature 5 — Snapshots
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `snapshot|Snapshot|getLastVersion|cachedAggregate` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep same patterns across docs/docs/**/*.md → docs/docs/3-reacting-to-events/5-snapshots.md mentions snapshots as a userland pattern only ("One solution is to periodically persist snapshots of your aggregates, e.g. through a message bus listener") — no framework API.
+                   (3) Package-metadata grep → 0 matches. Keywords in all 8 packages: ["event","source","store","typescript"] only.
+                   Confidence: high. The docs snapshot page describes a convention, not a framework feature.
+How it works:      Not implemented. getAggregate (packages/core/src/eventStore/eventStore.ts:242–252) always replays from version 1 via getEvents with no minVersion floor other than an explicit maxVersion option. There is no snapshotStore abstraction, no getLastSnapshot/putSnapshot adapter method, and no reducer checkpoint in core. The docs page (docs/docs/3-reacting-to-events/5-snapshots.md) acknowledges the problem and points users to rolling their own snapshot via a message-bus listener.
+Guarantees:        None. Aggregate reconstruction is always O(n events) per call.
+Known limits:      For long-lived financial account streams (N5) — an account with 10 000+ events over 5 years — every getAggregate call replays all events. This becomes a latency problem at ~hundreds of events and a correctness risk (timeout) at thousands. The workaround (periodic snapshot via bus listener) is complex, error-prone, and not type-safe.
+Finance fit note:  MUST-have for N5 (long aggregate streams). Without snapshots, accounts accumulate unbounded replay cost. This is the second-most critical structural gap after the transactional outbox.
+```
+
+---
+
+### Category B — Projection & read-side
+
+**Category B tally:** castore — 1/5 ✅ · 0/5 🔶 · 1/5 ⚠️ · 3/5 ❌ (F6 projection runner, F7 rebuild, F8 lag monitoring absent)
+
+---
+
+### Feature 6 — Projection runner with checkpoints
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `checkpoint|lastProcessed|resumeFrom|subscription|projectionRunner` across packages/**/src/**/*.ts → 0 matches in in-scope packages.
+                   (2) Docs grep same patterns across docs/docs/**/*.md → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high.
+How it works:      Not implemented. There is no pull-based catch-up loop, no checkpoint table, and no projection runner concept in any in-scope package. The only event-distribution mechanism is push-based: ConnectedEventStore.pushEvent (packages/core/src/connectedEventStore/connectedEventStore.ts:134–140) publishes to a message channel after the event write. A consumer that misses a message has no catch-up mechanism within the framework.
+Guarantees:        None.
+Known limits:      Any projection or read-model worker must subscribe to the message bus and handle its own missed-event recovery. If the bus delivers at-least-once and the consumer crashes, replaying missed events requires out-of-band tooling (lib-dam, which is out of scope). There is no framework guarantee that all events reach projections.
+Finance fit note:  Account balance projections and transaction history views depend on reliable event delivery. The absence of a catch-up subscription means balance queries can be stale with no framework-level detection. Intersects N4 (zero event loss) and N5 (long streams that need efficient catch-up on startup).
+```
+
+---
+
+### Feature 7 — Projection rebuild
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `rebuild|fromGenesis|replayAll|dropProjection` across packages/**/src/**/*.ts → 0 matches.
+                   (2) docs grep → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high. Note: out-of-scope lib-dam contains `pourEventStoreEvents` / `pourEventStoreAggregateIds` which pass replay:true to a message channel — this is the closest analogue but is explicitly out of scope.
+How it works:      Not implemented in the in-scope package set. A rebuild requires: (a) a way to iterate all events in global order, (b) a checkpoint reset, (c) re-processing each event through the projection. The in-scope adapters provide listAggregateIds and getEvents per aggregate (packages/core/src/eventStorageAdapter.ts:34–51) but no global ordered stream. Rebuilding a projection requires userland scripts that loop over all aggregate IDs, fetch events per aggregate, and replay.
+Guarantees:        None at framework level.
+Known limits:      Rebuilding a read model for a large event store (millions of events) requires custom tooling per project. With no ordered global sequence in the Postgres table (no single monotonic global_position column), total-order replay is not straightforward. This ties directly to the absence of F6.
+Finance fit note:  Required for deployment of schema migrations to read models (N6) and for recovery from read-model corruption. The absence of this feature means every team builds bespoke replay scripts.
+```
+
+---
+
+### Feature 8 — Projection lag monitoring
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `projectionLag|lag|headPosition|checkpoint` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high. This feature depends on F6 (projection runner with checkpoints); since F6 is absent, F8 cannot exist.
+How it works:      Not implemented. There is no head-position concept in the event store (no global sequence number), no checkpoint storage, and therefore no lag measurement. Monitoring is entirely a userland concern.
+Guarantees:        None.
+Known limits:      Without lag metrics, stale balance queries in a financial UI are invisible until a user notices incorrect data. This is an operational risk rather than a correctness risk — the system can still function, but operators have no early warning of projection failures.
+Finance fit note:  Relevant for SLA monitoring on account balance queries. Depends on F6 being implemented first; classify as COULD until F6 (SHOULD) is delivered.
+```
+
+---
+
+### Feature 9 — Inline (sync) projections
+
+```
+Status:            ⚠️
+Layer:             userland-convention
+Evidence:          packages/core/src/eventStore/eventStore.ts:206–215 (onEventPushed callback called synchronously after pushEvent — user can write to a read model here);
+                   packages/core/src/eventStore/types.ts (OnEventPushed type);
+                   packages/core/src/eventStore/eventStore.ts:42–109 (pushEventGroup also calls onEventPushed per event after the DB transaction commits)
+How it works:      The EventStore constructor accepts an optional onEventPushed callback (packages/core/src/eventStore/eventStore.ts:206–215). This callback is invoked synchronously within the pushEvent flow after the adapter write returns, allowing a caller to update a read model before pushEvent returns to the command handler. However, this callback fires *after* the adapter write (not in the same DB transaction), making it a post-commit hook rather than a true transactional inline projection. A crash between the adapter write and the callback leaves the read model stale.
+Guarantees:        Convention-only. There is no test enforcing that onEventPushed is called before pushEvent returns to the user in all code paths. The callback's failure does not roll back the event write (no compensating transaction).
+Known limits:      Not truly "in same DB transaction" — the callback fires after the adapter write completes. For a Postgres-backed store, writing to a read model inside onEventPushed requires a separate DB connection or transaction, breaking the atomicity guarantee of a true inline projection. This is the userland pattern the framework supports, not an integrated feature.
+Finance fit note:  Useful for simple derived state (e.g. updating an account balance table) but risky for financial use cases where the read model must be transactionally consistent with the event log. A crash window exists between event write and read-model update.
+```
+
+---
+
+### Feature 10 — External (async) projections
+
+```
+Status:            ✅
+Layer:             core + eventbridge-adapter
+Evidence:          packages/core/src/connectedEventStore/connectedEventStore.ts:134–140 (pushEvent calls publishPushedEvent after adapter write);
+                   packages/core/src/connectedEventStore/publishPushedEvent.ts:1–53 (publishes NotificationMessage or StateCarryingMessage to the channel);
+                   packages/message-bus-adapter-event-bridge/src/adapter.ts:74–78 (publishMessage sends PutEventsCommand to EventBridge);
+                   packages/core/src/messaging/bus/notificationMessageBus.ts + stateCarryingMessageBus.ts (bus abstraction)
+How it works:      ConnectedEventStore wraps an EventStore with a MessageChannel. After each pushEvent the framework automatically publishes a notification message (event only) or state-carrying message (event + current aggregate) to the configured channel via publishPushedEvent. EventBridge adapter sends the message via AWS SDK PutEventsCommand. Downstream projection workers subscribe to the bus and process events asynchronously. The replay option (PublishMessageOptions.replay) marks messages as __REPLAYED__ on EventBridge's detail-type, allowing consumers to distinguish live from replayed messages.
+Guarantees:        The publish step is covered by unit tests (adapter.unit.test.ts). The type-level message envelope (NotificationMessage/StateCarryingMessage) is exported and stable. The replay flag is tested (message-bus-adapter-event-bridge/src/adapter.unit.test.ts:82–83).
+Known limits:      Publish is fire-and-forget after the DB commit (not in the same transaction — see F15). A process crash between DB commit and EventBridge PutEvents loses the message with no retry within the framework. Consumers must handle at-least-once delivery and implement their own dedup. No built-in catch-up if a consumer was offline.
+Finance fit note:  The primary mechanism for read-side projections (account balances, transaction feeds). The fire-and-forget publish is the core of the N4 (zero event loss) gap — until a transactional outbox is added, event loss is possible.
+```
+
+---
+
+### Category C — Schema evolution
+
+**Category C tally:** castore — 0/4 ✅ · 1/4 🔶 · 1/4 ⚠️ · 2/4 ❌ (F12 upcaster pipeline absent, F13 event type retirement absent)
+
+---
+
+### Feature 11 — Explicit event type versioning
+
+```
+Status:            ⚠️
+Layer:             userland-convention
+Evidence:          packages/core/src/event/eventDetail.ts:3–22 (EventDetail type — fields: aggregateId, version, type, timestamp, payload, metadata; version is aggregate stream position, not event schema version);
+                   packages/core/src/event/eventType.ts:4–34 (EventType class — type field is a string literal; no schemaVersion field);
+                   packages/event-type-zod/src/eventType.ts:1–46 (ZodEventType extends EventType — adds payloadSchema/metadataSchema; no event schema version field)
+How it works:      The event envelope has a `version` field (eventDetail.ts:14) but this is the aggregate stream position (1, 2, 3 ...), not an event schema version. There is no dedicated schema-version field on EventDetail or EventType. The only supported versioning convention is encoding the schema version into the event type string literal (e.g. `ACCOUNT_CREDITED_V2`) — this is naming convention only, not a framework concept. ZodEventType adds payload/metadata Zod schemas but has no notion of schema evolution.
+Guarantees:        Convention-only. No test enforces versioned type naming. The type compiler ensures type-string uniqueness within an EventStore's union, but not schema-version semantics.
+Known limits:      No framework-level separation of "aggregate version" from "event schema version" means consumers must inspect event type string names to detect schema evolution. Tooling for listing all schema versions of a given event type does not exist. This is the prerequisite for F12 (upcaster pipeline).
+Finance fit note:  For a 5+ year event horizon (N6), schema evolution without explicit versioning is fragile. New developers cannot discover the version history of an event type from the framework; they must search commit history or naming conventions.
+```
+
+---
+
+### Feature 12 — Upcaster pipeline
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `upcast|upcaster|migrate.*event|transform.*event|schemaVersion` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep same patterns across docs/docs/**/*.md → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high.
+How it works:      Not implemented. getEvents (packages/core/src/eventStorageAdapter.ts:34–38) returns raw EventDetail objects as stored; there is no read-time transformation layer. A consumer receiving an old-schema event must handle the old shape directly. There is no registered pipeline of (eventType, versionFrom, versionTo) → transform functions anywhere in core or the adapters.
+Guarantees:        None.
+Known limits:      Without upcasters, any change to event payload structure requires either: (a) keeping all old event handlers in the application forever, or (b) a one-off migration script that rewrites stored events (violating append-only). Both approaches are error-prone over a 5-year horizon. This is a SHOULD-have gap for N6.
+Finance fit note:  Regulatory reporting may require re-processing historical events through new schema; without an upcaster pipeline this requires custom migration code per event type change.
+```
+
+---
+
+### Feature 13 — Event type retirement / rename
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `deprecat|retire|removeEventType|legacyType` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep `deprecat|retire|remove.*event` across docs/docs/**/*.md → only one match in migration guides referencing a DynamoDB adapter rename (docs/docs/5-migration-guides/1-v1-to-v2.md:102), not an event-type retirement mechanism.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high.
+How it works:      Not implemented. EventType (packages/core/src/event/eventType.ts) has no deprecated flag, no replacement pointer, and no controlled removal mechanism. Old event types remain in the EventStore's EVENT_TYPES union indefinitely; removing one is a breaking type change with no migration path. The reserved event types set (packages/core/src/event/reservedEventTypes.ts) exists only to guard __REPLAYED__ and __AGGREGATE_EXISTS__ from accidental use.
+Guarantees:        None.
+Known limits:      Accumulation of obsolete event types in the union type makes the domain model increasingly noisy. More critically, there is no way to validate at the store level that a deprecated event type is no longer being pushed, preventing "silent reactivation" bugs.
+Finance fit note:  Over a 5-year lifecycle (N6), event types will be renamed and retired. Without a formal retirement mechanism each team maintains its own ad-hoc convention.
+```
+
+---
+
+### Feature 14 — Tolerant deserialization
+
+```
+Status:            🔶
+Layer:             zod-event-type-lib
+Evidence:          packages/event-type-zod/src/eventType.ts:1–46 (ZodEventType — payload/metadata schemas are optional; parsing is handled by payloadSchema.parse() when defined);
+                   packages/core/src/event/eventType.ts:12–28 (base EventType.parseEventDetail is optional; returns isValid flag);
+                   packages/event-type-zod/src/eventType.unit.test.ts (no passthrough/strip test — Zod default is .strip() on objects, i.e. unknown fields are silently dropped)
+How it works:      ZodEventType stores a Zod schema for payload and metadata. Zod's default object parsing mode is .strip() — unknown fields are silently removed, which is tolerant in the sense that unknown fields do not cause a parse failure. However, the base EventType class has no parseEventDetail implementation at all (it is optional), and the core adapter layer never calls parseEventDetail — events are returned as raw JSON from the DB without schema validation. Tolerance is therefore: (a) never tested against the actual adapter deserialization path, and (b) only operative if the application explicitly calls parseEventDetail.
+Guarantees:        Convention: Zod default strip behaviour means a ZodEventType schema will not fail on unknown fields if the application layer calls parseEventDetail. Not adapter-level enforced.
+Known limits:      The adapter (postgres adapter.ts:169–186 toEventDetail) returns a plain EventDetail from raw DB row JSON — no schema validation is applied at the read path. parseEventDetail is entirely optional; a consumer that does not call it gets the raw shape with no tolerance guarantee. There is no framework mechanism to enforce that parseEventDetail is called.
+Finance fit note:  Forward compatibility across deployments (N6) requires tolerant reading. The Zod strip default provides this, but only if applications call parseEventDetail — which is convention, not enforcement.
+```
+
+---
+
+### Category D — Distributed delivery
+
+**Category D tally:** castore — 2/5 ✅ · 0/5 🔶 · 1/5 ⚠️ · 2/5 ❌ (F15 transactional outbox absent, F19 DLQ absent)
+
+---
+
+### Feature 15 — Transactional outbox
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `outbox|transactionalOutbox|relay|inbox` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep same patterns → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Critical architectural observation: packages/core/src/connectedEventStore/connectedEventStore.ts:134–140 shows that pushEvent calls publishPushedEvent AFTER the adapter write returns — two separate operations, no shared transaction.
+                   Confidence: high.
+How it works:      Not implemented. ConnectedEventStore.pushEvent (line 134–140) calls the underlying event store's pushEvent, waits for it to complete, then calls publishPushedEvent. PublishPushedEvent (packages/core/src/connectedEventStore/publishPushedEvent.ts:26–49) calls messageChannel.publishMessage, which invokes the EventBridge PutEvents API. These are two independent async calls with no transactional binding. A process crash, network failure, or EventBridge throttle error after the DB write but before PutEvents succeeds results in a committed event that is never published to the bus.
+Guarantees:        None. The dual-write gap is real and documented in the code structure.
+Known limits:      This is the most critical structural gap for the N4 (zero event loss) requirement. Without a transactional outbox (write event + outbox row in same DB tx; relay worker publishes from outbox), there is an inherent window of message loss on every pushEvent call. EventBridge throttling under load widens this window further.
+Finance fit note:  MUST-have for N4. A payment-confirmed event that is stored in the DB but never published to the bus means the balance projection is never updated — the user sees an incorrect balance. This is the single highest-priority gap for the D1 finance profile.
+```
+
+---
+
+### Feature 16 — At-least-once delivery + idempotent consumer
+
+```
+Status:            ⚠️
+Layer:             eventbridge-adapter + userland-convention
+Evidence:          packages/message-bus-adapter-event-bridge/src/adapter.ts:67–78 (formatMessage sets Detail to JSON.stringify(message), Source to eventStoreId, DetailType to event.type — no stable dedup ID added);
+                   packages/core/src/event/eventDetail.ts:3–22 (EventDetail has aggregateId + version — together they form a stable natural key);
+                   packages/core/src/messaging/channel/types.ts:1–3 (PublishMessageOptions.replay flag exists)
+How it works:      EventBridge delivers messages at-least-once. The framework publishes each event as an EventBridge entry with Source=eventStoreId, DetailType=event.type, and Detail=JSON.stringify(message) — the full event including aggregateId and version. Consumers can derive a stable dedup key from (eventStoreId, aggregateId, version) from the message detail, but the adapter does not set an explicit MessageDeduplicationId or idempotency key field on the EventBridge entry. Dedup is a consumer-side responsibility using the natural key.
+Guarantees:        The natural key (aggregateId + version) is always present in the message payload (guaranteed by EventDetail type). The replay flag allows consumers to distinguish live from replayed messages.
+Known limits:      No framework helper for consumer-side dedup; each projection/handler must implement its own. EventBridge standard buses do not support dedup natively (only FIFO queues with message group IDs do). Redelivery after a consumer crash can produce double-processing without an idempotency table.
+Finance fit note:  Consumer-side dedup is necessary for all financial handlers (payment confirmed, balance updated). The natural key exists but the framework provides no dedup helper, leaving each handler team to re-implement the same pattern.
+```
+
+---
+
+### Feature 17 — Message bus abstraction
+
+```
+Status:            ✅
+Layer:             core
+Evidence:          packages/core/src/messaging/bus/notificationMessageBus.ts:1–25 (NotificationMessageBus class);
+                   packages/core/src/messaging/bus/stateCarryingMessageBus.ts (StateCarryingMessageBus);
+                   packages/core/src/messaging/bus/aggregateExistsMessageBus.ts (AggregateExistsMessageBus);
+                   packages/core/src/messaging/channel/messageChannelAdapter.ts:1–13 (MessageChannelAdapter interface: publishMessage + publishMessages)
+How it works:      Core defines three bus types (Notification, StateCarrying, AggregateExists) that extend the NotificationMessageChannel/StateCarryingMessageChannel base classes. Each bus holds a list of source event stores and a MessageChannelAdapter. The adapter interface (MessageChannelAdapter) has two methods: publishMessage and publishMessages. Swapping the implementation (in-memory for tests, EventBridge for production) requires only changing the adapter instance — application code is insulated. Fan-out to multiple consumers is handled at the EventBridge rule level, not in castore.
+Guarantees:        The MessageChannelAdapter interface is a stable type contract exported from core. Type-level: the message shape (NotificationMessage / StateCarryingMessage) is typed to the specific event store's event union.
+Known limits:      No built-in retry, backoff, or circuit breaker in the bus publish path. Fan-out to multiple handlers is EventBridge-native (rules), not framework-managed. There is no in-scope bus adapter other than EventBridge (in-memory bus is out of scope per audit scope).
+Finance fit note:  The bus abstraction is well-designed for the D1 profile. The three message types (notification, state-carrying, aggregate-exists) cover the most common financial event patterns.
+```
+
+---
+
+### Feature 18 — Message queue abstraction
+
+```
+Status:            ✅
+Layer:             core
+Evidence:          packages/core/src/messaging/queue/notificationMessageQueue.ts:1–25 (NotificationMessageQueue class);
+                   packages/core/src/messaging/queue/stateCarryingMessageQueue.ts (StateCarryingMessageQueue);
+                   packages/core/src/messaging/queue/aggregateExistsMessageQueue.ts (AggregateExistsMessageQueue);
+                   packages/core/src/messaging/channel/messageChannelAdapter.ts:1–13 (same MessageChannelAdapter interface as bus)
+How it works:      Core defines three queue types mirroring the bus types. They share the same MessageChannelAdapter interface as the bus, allowing the same adapter implementation to back both a bus and a queue. The distinction (bus = fan-out, queue = single consumer) is expressed at the type level (messageChannelType: 'bus' | 'queue') and enforced at the infrastructure level by the adapter. The in-memory queue adapter (out of scope) and SQS adapter (out of scope) are the reference implementations. The framework provides the abstraction; adapter selection determines the delivery guarantee.
+Guarantees:        Type-level: queue message type is correctly narrowed. Unit tests for queue types exist in packages/core/src/messaging/queue/*.fixtures.test.ts and *.type.test.ts.
+Known limits:      No in-scope queue adapter in the audit set — only the EventBridge bus adapters are in scope. The queue abstraction exists in core but is only exercised with out-of-scope adapters (SQS). For EventBridge, the queue pattern requires an EventBridge → SQS target configured outside the framework.
+Finance fit note:  Worker pattern (single-consumer queue) is needed for idempotent payment processing side effects. The abstraction is present; the in-scope adapter gap is the real constraint.
+```
+
+---
+
+### Feature 19 — Dead-letter queue / poison-pill handling
+
+```
+Status:            ❌
+Layer:             — (absent in-scope; AWS-native only)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `DLQ|dead.letter|deadLetter|poison|maxReceiveCount|retryPolicy` across packages/**/src/**/*.ts → 0 matches in in-scope packages.
+                   (2) Docs grep → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high. DLQ support exists at the AWS EventBridge/SQS infrastructure level, but castore has no API surface for it.
+How it works:      Not implemented at the framework level. The EventBridge adapter (packages/message-bus-adapter-event-bridge/src/adapter.ts) sends PutEvents with no retry configuration or failure callback. If a consumer Lambda throws, the retry behaviour is controlled entirely by EventBridge rule settings or SQS queue configuration — not by castore. There is no framework API to configure max retries, DLQ target, or failure reason capture.
+Guarantees:        None from castore. AWS infrastructure provides DLQ routing but the application must configure it manually via CDK/CloudFormation.
+Known limits:      Without framework-level DLQ convention, a poison-pill event (e.g. one that always throws a deserialization error) will retry indefinitely at the AWS level without surfacing to the application. No structured failure reason is captured by castore alongside the original message.
+Finance fit note:  Important for operational resilience: a payment event that fails processing due to a bug must be routed to a DLQ with the original message and failure context, not silently dropped. Currently requires 100% infrastructure-layer configuration with no castore involvement.
+```
+
+---
+
+### Category E — Operational & governance
+
+**Category E tally:** castore — 1/7 ✅ · 0/7 🔶 · 1/7 ⚠️ · 5/7 ❌ (F20 crypto-shredding, F21 encryption at rest, F22 multi-tenancy, F23 causation/correlation, F25 observability absent; F24 replay partial ⚠️)
+
+---
+
+### Feature 20 — GDPR crypto-shredding
+
+```
+Status:            ❌
+Layer:             — (absent)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `crypto.?shred|per.?subject.?key|encryption.?key|\bkms\b|envelope.?encrypt` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep same patterns → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high.
+How it works:      Not implemented. The event payload (packages/core/src/event/eventDetail.ts:15) is stored as plain JSONB (packages/event-storage-adapter-postgres/src/adapter.ts:122: `data JSONB`). There is no per-subject key registry, no payload encryption at push time, and no key-deletion mechanism. PII written to an event payload is stored in plaintext indefinitely.
+Guarantees:        None.
+Known limits:      Without crypto-shredding, GDPR Article 17 (right to erasure) cannot be satisfied while maintaining the immutable event log. A data erasure request for a customer requires either physically deleting events (violating append-only) or writing tombstone/correction events (which still leaves the PII in historical events). This is a regulatory blocker for a financial product operating in the EU.
+Finance fit note:  MUST-have for N1 (GDPR/PII delete). This is the single highest-risk compliance gap. Every event type that contains customer PII (name, IBAN, email, address) is potentially non-compliant without this feature. Requires KMS integration, per-subject key table, and encryption at push/decrypt at read — an L–XL effort.
+```
+
+---
+
+### Feature 21 — Event encryption at rest
+
+```
+Status:            ❌
+Layer:             — (absent; infrastructure-layer concern)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `encrypt.*event|payload.*encrypt|pgcrypto|encrypt` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high. Postgres TDE / AWS RDS encryption at rest is an infrastructure concern outside the framework.
+How it works:      Not implemented at the framework level. Events are stored as plaintext JSONB (packages/event-storage-adapter-postgres/src/adapter.ts:122). Encryption at rest is an infrastructure-layer responsibility: AWS RDS supports transparent encryption of storage volumes, which protects against physical media access. The framework provides no payload-level encryption that would protect data from a compromised DB admin or application user.
+Guarantees:        None from castore.
+Known limits:      Framework-level payload encryption (distinct from TDE) would provide an additional layer of protection for sensitive fields even when the DB is accessible via SQL. The current design relies entirely on infrastructure-layer controls. Note: implementing this correctly typically requires a key-management service and adds complexity to the read path (decrypt on getEvents).
+Finance fit note:  Partially addressed by infrastructure (AWS RDS encryption) for the N1 profile, but payload-level encryption is a defence-in-depth measure for financial PII. The absence of framework support means all encryption must be implemented in every command handler individually. This may be classified COULD if TDE is accepted as sufficient.
+```
+
+---
+
+### Feature 22 — Multi-tenancy
+
+```
+Status:            ❌
+Layer:             — (absent; out of profile — see note)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `tenant|multiTenant|tenantId|rowLevelSecurity` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high.
+How it works:      Not implemented. The event table schema (packages/event-storage-adapter-postgres/src/adapter.ts:115–129) has aggregate_name (eventStoreId) and aggregate_id columns but no tenant column. Row-level security (RLS) policies are not configured by the framework. Tenant isolation, if needed, must be implemented via aggregate ID conventions (e.g. `{tenantId}#{entityId}`) or separate database schemas per tenant — both are userland patterns with no framework support.
+Guarantees:        None.
+Known limits:      If multi-tenancy is needed in future, retrofitting it onto the existing schema requires a migration (adding a tenant column, updating all queries) and a breaking change to the adapter API. The current design makes single-tenant assumptions throughout.
+Finance fit note:  The D1 profile for this analysis is single-tenant; multi-tenancy is explicitly out of profile (spec §0). This feature is classified WON'T for the current roadmap. The audit entry is recorded for completeness per the plan requirement that all 26 features be audited; the gap entry (if any) in §5 will carry WON'T classification.
+```
+
+---
+
+### Feature 23 — Causation / correlation metadata
+
+```
+Status:            ❌
+Layer:             — (absent; partial via open metadata field)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `causationId|correlationId|causation|correlation` across packages/**/src/**/*.ts → 0 matches.
+                   (2) Docs grep → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Partial mitigation: packages/core/src/event/eventDetail.ts:15-16 shows a generic `metadata: METADATA` field exists on every event — a caller can store causationId/correlationId there by convention.
+                   Confidence: high (named fields absent); medium (generic metadata workaround exists).
+How it works:      Not implemented as named fields. The event envelope (eventDetail.ts) has a generic `metadata` field typed to any METADATA generic. There are no framework-enforced causationId or correlationId fields, no validation that they are populated, and no built-in query capability to traverse a causation chain. Application code must use the metadata field by convention. The EventBridge message envelope (message.ts) also has no causal metadata fields beyond eventStoreId.
+Guarantees:        Convention-only. The metadata field's type is controlled by the EventType definition; ZodEventType can enforce a metadata schema, but there is no core-level mandate that causation/correlation fields be present.
+Known limits:      In a financial audit trail (D1), auditors require the ability to answer "which command triggered this event and as part of which user session?" Without mandatory causation/correlation IDs, individual events cannot be linked to their cause. An optional convention means some handlers will populate the fields and some will not, making the audit trail incomplete.
+Finance fit note:  SHOULD-have for D1 audit trail requirements. The metadata field provides a partial workaround, but without mandatory enforcement and query tooling it is insufficient for regulatory compliance. A SHOULD gap entry is warranted.
+```
+
+---
+
+### Feature 24 — Replay tooling
+
+```
+Status:            ⚠️
+Layer:             core (partial: replay flag on PublishMessageOptions)
+Evidence:          packages/core/src/messaging/channel/types.ts:1–3 (PublishMessageOptions.replay?: boolean);
+                   packages/core/src/messaging/channel/notificationMessageChannel.ts:93–105 (publishMessage accepts replay option and passes to adapter);
+                   packages/message-bus-adapter-event-bridge/src/adapter.ts:24–27 (replay=true sets DetailType to __REPLAYED__);
+                   packages/core/src/event/reservedEventTypes.ts:1–10 (__REPLAYED__ reserved type);
+                   packages/core/src/eventStorageAdapter.ts:13–14 (force?: boolean on PushEventOptions — allows overwriting existing events during a re-import)
+How it works:      The framework has two partial replay primitives: (1) a replay flag on publishMessage that sets the EventBridge DetailType to `__REPLAYED__`, allowing downstream consumers to detect and handle replayed messages differently from live events; (2) a force option on pushEvent that performs an ON CONFLICT DO UPDATE in Postgres, enabling re-import of corrected events. However, there is no CLI, script, or API in the in-scope packages that orchestrates a full replay — iterating all aggregates, fetching their events, and re-publishing them to a channel. The out-of-scope lib-dam package contains pourEventStoreEvents with replay:true, which is the closest analogue but is not in scope.
+Guarantees:        The replay flag is tested in message-bus-adapter-event-bridge/src/adapter.unit.test.ts:82–83.
+Known limits:      No end-to-end replay orchestration in scope. The replay flag alone is insufficient for a controlled backfill: the caller must still iterate aggregates, fetch events, and call publishMessages manually. No progress tracking, no pause/resume, no exactly-once guarantee during replay.
+Finance fit note:  Needed for backfilling new read models and recovering from failed projections (N4/N5). The replay flag is a building block; a full replay tool is a SHOULD gap.
+```
+
+---
+
+### Feature 25 — Observability
+
+```
+Status:            ❌
+Layer:             — (absent; userland concern)
+Evidence:          Absence confirmed on 2026-04-16 via:
+                   (1) Code grep `trace|span|opentelemetry|otel|logger|metric` across packages/**/src/**/*.ts in in-scope packages → 0 matches.
+                   (2) Docs grep → 0 matches.
+                   (3) Package-metadata grep → 0 matches.
+                   Confidence: high.
+How it works:      Not implemented. The event store, adapters, and message bus do not emit any structured logs, OpenTelemetry spans, or metrics. There is no hook point for injecting a tracer or logger into the framework. Observability is entirely a userland concern: application code wraps each pushEvent or getAggregate call with its own spans.
+Guarantees:        None.
+Known limits:      Without framework-native observability, event commit latency, projection lag, and outbox queue depth are invisible to operators. Each team re-implements the same push/get instrumentation boilerplate. The absence of a hook point (e.g. an optional `onEvent` middleware) makes library-level tracing hard to add without forking core.
+Finance fit note:  Important for production operations but not a correctness blocker. COULD classification for the D1 profile — userland wrappers are workable for small teams. Becomes more pressing as the service scales.
+```
+
+---
+
+### Feature 26 — Testing utilities
+
+```
+Status:            ✅
+Layer:             lib-test-tools + in-memory-adapter
+Evidence:          packages/lib-test-tools/src/mockEventStore.ts:1–31 (mockEventStore helper — wraps any EventStore with InMemoryEventStorageAdapter + optional initialEvents);
+                   packages/lib-test-tools/src/muteEventStore.ts:1–11 (muteEventStore — silently replaces adapter with in-memory for tests);
+                   packages/lib-test-tools/src/mockedEventStore.ts (MockedEventStore class);
+                   packages/event-storage-adapter-in-memory/src/adapter.ts (full in-memory adapter with no infra deps);
+                   packages/core/src/eventStore/eventStore.ts:269–296 (simulateAggregate — dry-run aggregate state without persistence)
+How it works:      lib-test-tools provides mockEventStore (sets up a full event store with in-memory adapter and optional seed events) and muteEventStore (replaces an existing store's adapter with in-memory). These helpers enable given/when/then-style domain tests without any infrastructure. The in-memory adapter faithfully mirrors the Postgres adapter semantics (OCC, pushEventGroup rollback) so tests catch real invariant violations. simulateAggregate in EventStore allows testing aggregate state projections without any I/O.
+Guarantees:        The testing helpers are themselves tested (mockEventStore.unit.test.ts, muteEventStore.unit.test.ts, type tests). The in-memory adapter has full unit-test coverage.
+Known limits:      No explicit given/when/then API — tests must call pushEvent/getAggregate directly. No test helper for message bus scenarios (assertPublished, capturePublishedMessages). Multi-step saga testing requires manual setup.
+Finance fit note:  Strong positive for D1. Fast, deterministic, in-memory domain tests lower the cost of thorough invariant coverage — critical for financial logic where edge cases are expensive. This is one of castore's standout strengths (see §4 "What castore does exceptionally well").
+```
+
+---
+
+### What castore does exceptionally well (for the finance profile)
+
+> This section is a placeholder for Task 2.7 (separate batch). The five bullets from spec §4 will be filled in with `file:line` back-references once the full audit evidence is assembled.
 
 ## 5. Gap detail catalogue
 
