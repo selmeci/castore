@@ -509,7 +509,7 @@ The baseline explicitly excludes: type-level reducer contracts, schema migration
 
 ### 3.7 Competitors deliberately excluded
 
-The following competitors were evaluated during competitor selection and excluded from the primary analysis:
+The following competitors were evaluated during competitor selection (spec §3) and excluded from the primary analysis. They are documented here so the exclusion is auditable — not an oversight.
 
 - **Prooph** (PHP) — abandoned 2023; PHP ecosystem mismatch; no longer a meaningful reference.
 - **@nestjs/cqrs** — CQRS pattern only; no storage layer; not an event-sourcing framework.
