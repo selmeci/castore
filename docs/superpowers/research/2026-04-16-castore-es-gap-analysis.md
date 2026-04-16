@@ -282,6 +282,7 @@ How it works:      Not implemented. There is no idempotency-key field on the eve
 Guarantees:        None. Retry of a failed pushEvent may produce a duplicate event at the next version number if the original write succeeded at the DB level but the response was lost.
 Known limits:      Network-level retries without idempotency keys create duplicate events, which in a financial system means duplicate charges or credits. This is a critical gap (Finance: N4 zero event loss + exact-once semantics). Userland workaround requires a separate idempotency table or using the command ID as the aggregate ID prefix.
 Finance fit note:  MUST-have for D1 (financial payments). A retried payment command that pushes event v=3 a second time produces a real monetary duplicate. No framework-level mitigation exists; each command handler team must implement its own dedup.
+Upstream signal: see Appendix §8.1 for upstream issue/PR #180.
 ```
 
 ---
@@ -300,6 +301,7 @@ How it works:      Not implemented. getAggregate (packages/core/src/eventStore/e
 Guarantees:        None. Aggregate reconstruction is always O(n events) per call.
 Known limits:      For long-lived financial account streams (N5) — an account with 10 000+ events over 5 years — every getAggregate call replays all events. This becomes a latency problem at ~hundreds of events and a correctness risk (timeout) at thousands. The workaround (periodic snapshot via bus listener) is complex, error-prone, and not type-safe.
 Finance fit note:  MUST-have for N5 (long aggregate streams). Without snapshots, accounts accumulate unbounded replay cost. This is the second-most critical structural gap after the transactional outbox.
+Upstream signal: see Appendix §8.1 for upstream issue/PR #161 and #181.
 ```
 
 ---
@@ -324,6 +326,7 @@ How it works:      Not implemented. There is no pull-based catch-up loop, no che
 Guarantees:        None.
 Known limits:      Any projection or read-model worker must subscribe to the message bus and handle its own missed-event recovery. If the bus delivers at-least-once and the consumer crashes, replaying missed events requires out-of-band tooling (lib-dam, which is out of scope). There is no framework guarantee that all events reach projections.
 Finance fit note:  Account balance projections and transaction history views depend on reliable event delivery. The absence of a catch-up subscription means balance queries can be stale with no framework-level detection. Intersects N4 (zero event loss) and N5 (long streams that need efficient catch-up on startup).
+Upstream signal: see Appendix §8.1 for upstream issue/PR #49.
 ```
 
 ---
@@ -415,6 +418,7 @@ How it works:      The event envelope has a `version` field (eventDetail.ts:14) 
 Guarantees:        Convention-only. No test enforces versioned type naming. The type compiler ensures type-string uniqueness within an EventStore's union, but not schema-version semantics.
 Known limits:      No framework-level separation of "aggregate version" from "event schema version" means consumers must inspect event type string names to detect schema evolution. Tooling for listing all schema versions of a given event type does not exist. This is the prerequisite for F12 (upcaster pipeline).
 Finance fit note:  For a 5+ year event horizon (N6), schema evolution without explicit versioning is fragile. New developers cannot discover the version history of an event type from the framework; they must search commit history or naming conventions.
+Upstream signal: see Appendix §8.1 for upstream issue/PR #123.
 ```
 
 ---
@@ -620,6 +624,7 @@ How it works:      Not implemented. The event table schema (packages/event-stora
 Guarantees:        None.
 Known limits:      If multi-tenancy is needed in future, retrofitting it onto the existing schema requires a migration (adding a tenant column, updating all queries) and a breaking change to the adapter API. The current design makes single-tenant assumptions throughout.
 Finance fit note:  The D1 profile for this analysis is single-tenant; multi-tenancy is explicitly out of profile (spec §0). This feature is classified WON'T for the current roadmap. The audit entry is recorded for completeness per the plan requirement that all 26 features be audited; the gap entry (if any) in §5 will carry WON'T classification.
+Upstream signal: see Appendix §8.1 for upstream issue/PR #134.
 ```
 
 ---
@@ -716,4 +721,23 @@ Finance fit note:  Strong positive for D1. Fast, deterministic, in-memory domain
 
 ## 8. Appendices
 
-> TODO: see spec §8 for template.
+> TODO: see spec §8 for template (sections §8.2 onward).
+
+### 8.1 Upstream signals
+
+Scanning the upstream repository's closed PRs and open/closed issues reveals the *maintainer's intended scope* for castore: features that were explicitly declined or stripped out signal architectural choices, not just bandwidth constraints. This matters for the internal fork because it means we should not wait for upstream to fill certain gaps — the upstream has signalled it will not.
+
+Scanned on 2026-04-16 via `gh pr list --repo castore-dev/castore --state closed --limit 60` and `gh issue list --repo castore-dev/castore --state {closed,open} --limit 60`; restricted to the most-recent 60 closed PRs and 60 closed/open issues respectively.
+
+| # | Title | State | Annotation |
+|---|-------|-------|------------|
+| [#161](https://github.com/castore-dev/castore/pull/161) | fix: remove any mention of snapshots | MERGED (2023-10-06) | Maintainer actively stripped snapshot documentation — snapshots are acknowledged as a userland concern, not a planned framework feature (maps to F5). |
+| [#181](https://github.com/castore-dev/castore/issues/181) | Snapshot Discussion | OPEN (since 2024-01-16) | Community-raised snapshot request with no assignee, no milestone, and no upstream activity in over two years — confirms F5 will not be delivered upstream. |
+| [#134](https://github.com/castore-dev/castore/issues/134) | Multitenancy | CLOSED **wontfix** (2023-09-29) | Explicitly closed as wontfix with label; maintainer considers multi-tenancy out of scope for the framework layer (maps to F22). |
+| [#123](https://github.com/castore-dev/castore/issues/123) | [Suggestion] Specify version in EventType / EventDetails | CLOSED (2023-06-14) | Community request to add a schema-version field to event types — closed without implementation, confirming schema versioning (F11) is convention-only by design. |
+| [#180](https://github.com/castore-dev/castore/issues/180) | Auto increment version if event with same version exists | CLOSED (2024-03-20) | Request to silently auto-increment version on conflict — declined; version collision intentionally raises an error (OCC, F2). Adjacent to F4: confirms no idempotency-key mechanism is planned. |
+| [#72](https://github.com/castore-dev/castore/issues/72) | Create `withInMemoryCache` high-order function on event storage adapters | CLOSED (2023-06-02) | Caching HOF for read performance — closed; the closest snapshot-adjacent feature the upstream considered, but implemented as a separate opt-in utility rather than a framework-first snapshot store (F5 context). |
+| [#49](https://github.com/castore-dev/castore/issues/49) | Query Models | OPEN (since 2023-02-07) | Long-standing open issue requesting a projection/read-model layer — no activity, no milestone; confirms projection runner (F6) and rebuild (F7) are not on the upstream roadmap. |
+| [#136](https://github.com/castore-dev/castore/issues/136) | Add validation at pushEvent & commands | OPEN (since 2023-08-04) | Request to add validation hooks in the push path — no activity; indirectly highlights absence of observability hooks (F25) and framework-level validation middleware. |
+| [#198](https://github.com/castore-dev/castore/issues/198) | State of this library? | CLOSED (2025-10-12) | Maintainer confirmed the library is "stable but not actively developed"; Zod v4 support was the last planned feature, signalling effective dormancy. |
+| [#203](https://github.com/castore-dev/castore/issues/203) | State of this library? | OPEN (since 2026-01-09) | Second community query about dormancy; no maintainer response as of scan date — reinforces the decision to treat castore as an internal fork with no upstream dependency. |
