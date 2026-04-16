@@ -424,7 +424,7 @@ This section profiles four primary competitors and one DIY-Postgres control base
 
 The DIY Postgres baseline represents what a competent senior developer could build in ≤3 working days using only the `pg` npm package, Postgres `SKIP LOCKED` for queue workers, and `LISTEN/NOTIFY` for lightweight pub-sub. Its purpose is to reveal the tier at which a framework begins earning its keep: features rated ✅ here are not strong arguments for adopting any framework, while features rated ⚠️ or ❌ identify where framework abstractions provide genuine leverage.
 
-The baseline explicitly excludes: type-level reducer contracts, schema migration tooling, adapter-swap capabilities, and any abstraction that requires architectural decisions a 3-day sprint cannot resolve. It answers the single question: "could we live without a framework for this feature?"
+The baseline explicitly excludes: type-level reducer contracts, schema migration tooling, adapter-swap capabilities, and any abstraction that requires architectural decisions a 3-day sprint cannot resolve. It answers the single question: "could we live without a framework for this feature?" A ✅ DIY rating should deflate a framework's ✅ for that same feature — if anyone can build it in hours, it is not a differentiator.
 
 **26-feature coverage:**
 
