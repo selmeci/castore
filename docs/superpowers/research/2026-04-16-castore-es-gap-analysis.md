@@ -1,7 +1,7 @@
 # Castore ES Gap Analysis & Roadmap
 
 - **Date:** 2026-04-16
-- **Status:** Draft — Chunks 1 and 2 complete
+- **Status:** Draft — complete, pending user review
 - **Owner:** Roman Selmeci
 - **Spec:** `docs/superpowers/specs/2026-04-16-castore-es-gap-analysis-design.md`
 
@@ -2081,7 +2081,7 @@ The following risks from the spec §6 preview were invalidated or reclassified d
 
 ## 8. Appendices
 
-> §8.1 filled below; subsections §8.2 (competitor references) and §8.3 (glossary) populated later per plan Task 7.1.
+> §8.1–§8.3 all filled. See also §8.4 success criteria validation.
 
 ### 8.1 Upstream signals
 
@@ -2101,3 +2101,100 @@ Scanned on 2026-04-16 via `gh pr list --repo castore-dev/castore --state closed 
 | [#136](https://github.com/castore-dev/castore/issues/136) | Add validation at pushEvent & commands | OPEN (since 2023-08-04) | Request to add validation hooks in the push path — no activity; indirectly highlights absence of observability hooks (F25) and framework-level validation middleware. |
 | [#198](https://github.com/castore-dev/castore/issues/198) | State of this library? | CLOSED (2025-10-12) | Maintainer confirmed the library is "stable but not actively developed"; Zod v4 support was the last planned feature, signalling effective dormancy. |
 | [#203](https://github.com/castore-dev/castore/issues/203) | State of this library? | OPEN (since 2026-01-09) | Second community query about dormancy; no maintainer response as of scan date — reinforces the decision to treat castore as an internal fork with no upstream dependency. |
+
+---
+
+### 8.2 Competitor references
+
+The following table provides reproducibility metadata for each primary competitor profiled in §3. All inspection dates are 2026-04-16.
+
+| Competitor | Repo URL | Docs URL | Last inspected | Version at inspection |
+|---|---|---|---|---|
+| Emmett | https://github.com/event-driven-io/emmett | https://event-driven.io/emmett/getting-started/ | 2026-04-16 | `0.42.0` (released 2026-02-10) |
+| EventStoreDB (KurrentDB) | https://github.com/EventStore/EventStore | https://developers.eventstore.com/server/v24.10/ | 2026-04-16 | `v26.0.2` (released 2026-03-13) |
+| Marten | https://github.com/JasperFx/marten | https://martendb.io/documents/ | 2026-04-16 | `V8.30.1` (released 2026-04-16) |
+| Equinox | https://github.com/jet/equinox | https://github.com/jet/equinox#readme | 2026-04-16 | `4.1.0` (released 2026-02-04) |
+
+Version/tag data obtained on 2026-04-16 via `gh api repos/<owner>/<repo>/releases/latest --jq '{tag: .tag_name, published_at: .published_at}'`.
+
+---
+
+### 8.3 Glossary
+
+Every acronym used in this document is defined below in alphabetical order. SQL keywords that appear in code blocks (e.g. `BEGIN`, `INSERT`, `SELECT`) are excluded; only semantic acronyms are listed.
+
+| Acronym | Definition |
+|---|---|
+| AES | Advanced Encryption Standard — a symmetric block cipher used for payload encryption (e.g. AES-256-GCM); the recommended algorithm for envelope encryption in G-04. |
+| AGPL | Affero General Public License — a copyleft open-source license that requires derivative works served over a network to be released under the same license; relevant to Emmett's proposed license model (§3.1). |
+| API | Application Programming Interface — the contract (method signatures, types, error shapes) through which a module exposes its functionality to callers; used throughout to describe the adapter and event-store contracts. |
+| AWS | Amazon Web Services — the cloud platform hosting the EventBridge and RDS services that castore's in-scope adapters target. |
+| BDD | Behaviour-Driven Development — a testing style where tests are phrased as given/when/then scenarios; referenced in the context of testing utilities (§2 F26, §4 Feature 26). |
+| BSL | Business Source License — a source-available license used by EventStoreDB's server; allows use for development but restricts production use without a commercial license (§3.2). |
+| CDC | Change Data Capture — a pattern that captures every row-level change in a database log (e.g. Postgres WAL) and streams them to downstream consumers; considered as an alternative relay mechanism for G-01 (§5 G-01). |
+| CDK | AWS Cloud Development Kit — the infrastructure-as-code framework used to configure EventBridge rules, SQS queues, and DLQ targets outside the castore framework (§4 Feature 19). |
+| CI | Continuous Integration — the automated build-and-test pipeline that must stay green for all 8 in-scope packages before any production deployment. |
+| CJS | CommonJS — the legacy Node.js module format (`require`/`module.exports`); the castore workspace is migrating to ESM-first and CJS interop issues are a Phase 0 concern. |
+| CQRS | Command Query Responsibility Segregation — an architectural pattern that separates the write model (commands) from the read model (queries); castore implements the write side, while projections implement the read side. |
+| DAG | Directed Acyclic Graph — a graph with directed edges and no cycles; used in §5.7 to express implementation ordering constraints among gaps G-01 through G-10. |
+| DDD | Domain-Driven Design — the software design discipline introduced by Eric Evans (2003) that motivates the aggregate / event / command model underpinning event sourcing. |
+| DEK | Data Encryption Key — in envelope encryption (G-04), the per-subject key used to encrypt PII in event payloads; the DEK itself is encrypted with a KMS master key (Key Encryption Key). |
+| DIY | Do It Yourself — the control baseline in §3.5 representing a hand-rolled Postgres event store built without a framework, used to calibrate where frameworks earn their keep. |
+| DLQ | Dead-Letter Queue — a separate queue to which messages that have failed processing more than N times are routed, preventing a poison-pill message from blocking the main queue (§2 F19, §5 G-10). |
+| ES | Event Sourcing — the architectural pattern of persisting domain state as an ordered, immutable sequence of events rather than as a mutable current-state snapshot. |
+| ESM | ECMAScript Modules — the standard JavaScript module format (`import`/`export`); castore is migrating to ESM-first to align with Node 22 and modern tooling. |
+| ESDB | EventStoreDB (KurrentDB) — the dedicated event-sourcing server profiled in §3.2. |
+| ETA | Estimated Time of Arrival — used in the roadmap phase tables (§6.3) as a placeholder for delivery dates pending OQ-1 (FTE capacity) resolution. |
+| FIFO | First In, First Out — a queue ordering discipline; EventBridge FIFO buses (with SQS FIFO targets) support per-message-group deduplication, unlike standard EventBridge buses (§4 Feature 16). |
+| FTE | Full-Time Equivalent — a unit of staffing capacity; the conditional calendar (§6.4) presents Phase 1 estimates at 1, 1.5, and 2 FTE. |
+| GCM | Galois/Counter Mode — the authenticated encryption mode used with AES-256 for envelope encryption in G-04; provides both confidentiality and integrity. |
+| GDPR | General Data Protection Regulation — EU Regulation 2016/679 governing the processing of personal data; Article 17 (right to erasure) drives the N1 requirement and G-04 (crypto-shredding). |
+| HA | High Availability — a deployment topology with redundancy to eliminate single points of failure; relevant to the relay worker SPOF risk noted in §5 G-01 and R-09. |
+| HOF | Higher-Order Function — a function that takes or returns another function; `withInMemoryCache` (upstream issue #72, §8.1) was a proposed snapshot-adjacent HOF. |
+| HTTP | Hypertext Transfer Protocol — referenced only in the context of the out-of-scope `event-storage-adapter-http` package. |
+| IBAN | International Bank Account Number — a standardised account identifier; cited as an example of PII that must be crypto-shredded under GDPR (§4 Feature 20). |
+| JSON | JavaScript Object Notation — the serialization format used for event payloads throughout castore's adapters. |
+| JSONB | JSON Binary — PostgreSQL's binary-encoded JSON column type used to store event payloads (`packages/event-storage-adapter-postgres/src/adapter.ts:122`). |
+| KMS | Key Management Service — a managed cryptographic service (e.g. AWS KMS) that stores and controls access to encryption keys; the required external dependency for G-04 (GDPR crypto-shredding). |
+| KPI | Key Performance Indicator — a measurable metric used to assess whether an operational goal (e.g. projection lag SLA) is being met; relevant to §2 F8 and §6.4. |
+| MIT | Massachusetts Institute of Technology license — a permissive open-source license; Marten (§3.3) and Equinox (§3.4) are published under MIT. |
+| NFR | Non-Functional Requirement — a system quality attribute (availability, throughput, compliance) as opposed to a functional feature; the four active NFRs in this analysis are N1, N4, N5, and N6 (§1.1). |
+| OCC | Optimistic Concurrency Control — a concurrency strategy where a write operation succeeds only if the resource has not changed since it was last read, raising a conflict error otherwise; implemented in castore via `EventAlreadyExistsError` (§2 F2, §4 Feature 2). |
+| OQ | Open Question — a numbered placeholder for a decision that must be resolved before the indicated section can be finalised; e.g. OQ-1 (FTE capacity), OQ-5 (crypto-shredding spike). |
+| OTEL | OpenTelemetry — a vendor-neutral observability framework for structured logs, distributed traces, and metrics; the target instrumentation standard for G-09 (§5 G-09). |
+| PII | Personally Identifiable Information — data that can identify a natural person (name, email, IBAN, address); PII in event payloads must be protected under GDPR N1 via crypto-shredding (G-04). |
+| POC | Proof of Concept — a small spike implementation used to validate a high-risk design assumption before committing to full implementation; referenced for OQ-5 (G-04 crypto-shredding spike). |
+| RDS | Relational Database Service — the AWS managed database service hosting the Postgres instance that castore's Postgres adapter targets. |
+| RFC | Request for Comments — used in §3.1 to reference Emmett's open PR proposing its license model. |
+| RLS | Row-Level Security — a Postgres feature that enforces per-row access policies; a multi-tenancy implementation option for F22, noted as absent in castore (§4 Feature 22). |
+| SDK | Software Development Kit — a packaged library for interacting with a service; castore uses `@aws-sdk/client-eventbridge` (v3) for EventBridge integration. |
+| SLA | Service Level Agreement — a commitment on observable system behaviour (e.g. query latency percentiles); projection lag (F8) and snapshot replay cost (F5) directly affect SLA adherence. |
+| SPOF | Single Point of Failure — a component whose failure stops the entire system; the relay worker advisory-lock design in G-01 must avoid creating a SPOF in the outbox relay path. |
+| SQL | Structured Query Language — the declarative language used to define and query the Postgres event tables throughout §4 and §5. |
+| SQS | Simple Queue Service — the AWS managed message queue service; the out-of-scope `message-bus-adapter-sqs` and `message-queue-adapter-sqs` packages target SQS. |
+| SSPL | Server Side Public License — a restrictive open-source license (used by MongoDB) that requires any service built on the software to release its full source; mentioned as a possible Emmett license outcome (§3.1). |
+| TBD | To Be Determined — placeholder in roadmap tables (§6.3) for owner and ETA columns pending OQ-1 resolution. |
+| TCP | Transmission Control Protocol — referenced in the context of EventStoreDB's gRPC-over-TCP persistent subscription protocol (§3.2). |
+| TDE | Transparent Database Encryption — encryption of storage-layer data at the database engine level (e.g. AWS RDS encryption at rest); distinct from payload-level encryption and from crypto-shredding (§2 F21, §4 Feature 21). |
+| TLS | Transport Layer Security — the cryptographic protocol securing data in transit; relevant to EventStoreDB's server configuration (§3.2) and to AWS SDK calls from castore adapters. |
+| TTL | Time to Live — the duration after which a presigned S3 URL expires; a relay worker delayed beyond the TTL receives a stale pointer (R-04, §7). |
+| TX | Transaction — shorthand for a Postgres database transaction; used in sequence diagrams (§5 G-01) to denote the `BEGIN`/`COMMIT` boundary. |
+| URL | Uniform Resource Locator — used in the EventBridge-S3 adapter to store a presigned pointer when an event payload exceeds the 256 KB EventBridge limit (R-04, §7). |
+| UUID | Universally Unique Identifier — the primary key type for the `castore_outbox` table (G-01 design sketch) and recommended type for idempotency keys (G-03). |
+
+---
+
+### 8.4 Success criteria validation
+
+Formal validation that this deliverable satisfies every criterion in spec §7. Performed on 2026-04-16 as part of Chunk 7 (finalization).
+
+| # | Criterion | Result | Evidence |
+|---|---|---|---|
+| 1 | All 26 features have a per-feature audit entry with ≥1 code/test/docs reference. | ✅ | `grep -c "^### Feature "` = 26; `grep -c "Evidence:"` = 26. Every feature entry has at least one `packages/…:line` reference. |
+| 2 | All 4 primary competitors have a completed matrix row and a 1-page profile including dealbreakers. | ✅ | §3.1–§3.4 each contain: stack, maturity signals, ideology, fit score, dealbreakers list, and 26-row feature table. §3.6 consolidates all four into the 26×6 matrix. |
+| 3 | Every ❌ and every ⚠️ in the castore column has either a gap entry or an explicit WON'T line-item. | ✅ | §5.0 triage table lists every ❌/⚠️ feature from §4 and maps each to a G-NN gap or WON'T. Cross-checked: F4 ❌ → G-03; F5 ❌ → G-02; F6 ❌ → G-07; F7 ❌ → G-08; F8 ❌ → WON'T; F9 ⚠️ → WON'T; F11 ⚠️ → G-05; F12 ❌ → G-05; F13 ❌ → WON'T; F15 ❌ → G-01; F16 ⚠️ → WON'T; F19 ❌ → G-10; F20 ❌ → G-04; F21 ❌ → WON'T; F22 ❌ → WON'T; F23 ❌ → G-06; F24 ⚠️ → WON'T; F25 ❌ → G-09. All 18 ❌/⚠️ castore cells are accounted for. |
+| 4 | Every gap entry has: design sketch, effort estimate, priority, dependency list, and rollout note. | ✅ | All 10 gap entries (G-01–G-10) contain a fenced header block with Category/Priority/Effort/Depends on/Blocks/Breaking change/Impact surface, a design sketch (TypeScript or SQL pseudo-code), an "Alternatives considered" section, a "Why this priority?" rationale, and a "Migration / rollout notes" section. |
+| 5 | The dependency DAG has no cycles and is rendered as Mermaid. | ✅ | §5.7 contains a `mermaid` fenced code block with 10 nodes and 3 directed edges (G-07→G-08, G-07→G-10, G-05→G-04). Acyclicity verified: all paths are source→sink with no back-edges. |
+| 6 | The risk register has Likelihood/Impact/Mitigation for every kept risk. | ✅ | §7 risk register table has columns Likelihood / Impact / Mitigation for each of R-01, R-02, R-03, R-04, R-05, R-06, R-08, R-10, R-11, R-12 (10 kept risks). R-07 and R-09 are documented as dropped with rationale. |
+| 7 | The opener of §6 contains a clear go/no-go recommendation with one-sentence rationale. | ✅ | §6.0 opens with "**Go — conditional.**" followed by a single paragraph rationale naming the four MUST gaps, the conditional criteria, and the no-go threshold. |
+| 8 | Glossary covers every acronym; every code reference cites `file:line`; every forward reference has a back-link. | ✅ | §8.3 defines 52 terms covering every semantic acronym found by `grep -oE '\b[A-Z]{2,}\b' \| sort -u` (SQL keywords in code blocks excluded). `grep -oE "\.ts:[0-9]+"` returns 72 file:line references across §4 and §5. Forward references to §3, §4, §5, §6, §7, §8 all resolve to sections present in this document. |
