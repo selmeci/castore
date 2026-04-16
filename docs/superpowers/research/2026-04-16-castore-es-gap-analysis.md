@@ -1028,8 +1028,865 @@ The gaps catalogued above are real and must be closed before production use. But
 
 ## 5. Gap detail catalogue
 
-> TODO: see spec §5 for template.
-> TODO: reuse F-numbers from §2 verbatim.
+### 5.0 Preamble — gap candidate triage
+
+Every feature with status ❌ or ⚠️ in §4 is a gap candidate. The table below records the decision for each candidate: either a full gap entry (with G-NN ID) or an explicit WON'T line-item (addressed in §5.6).
+
+| Feature | §4 Status | Decision | Rationale |
+|---|---|---|---|
+| F4 — Idempotent writes | ❌ | **G-03** (MUST) | Finance profile: retry-on-timeout creates double payments. |
+| F5 — Snapshots | ❌ | **G-02** (MUST) | N5: long streams make replay O(n) without snapshots. |
+| F6 — Projection runner with checkpoints | ❌ | **G-07** (SHOULD) | B: no catch-up subscription; stale balances are possible. |
+| F7 — Projection rebuild | ❌ | **G-08** (COULD) | Depends on G-07; needed but deferrable until runner exists. |
+| F8 — Projection lag monitoring | ❌ | **WON'T** | Depends on G-07; defer to after G-07 ships. |
+| F9 — Inline (sync) projections | ⚠️ | **WON'T** | onEventPushed extension point is sufficient for in-scope use; full transactional inline projection is a complex subsystem that blocks on G-07 groundwork. Revisit post-Phase-2. |
+| F11 — Explicit event type versioning | ⚠️ | **G-05** (SHOULD) | N6: prerequisite for upcaster pipeline; naming convention is fragile over 5+ years. (Absorbed into G-05 scope.) |
+| F12 — Upcaster pipeline | ❌ | **G-05** (SHOULD) | N6: schema evolution without upcasters forces forever-handlers or event rewrites. |
+| F13 — Event type retirement / rename | ❌ | **WON'T** | Depends on G-05; low urgency at greenfield stage; revisit in Phase 3. |
+| F15 — Transactional outbox | ❌ | **G-01** (MUST) | N4: dual-write gap causes event loss on crash/throttle. |
+| F16 — At-least-once + dedup | ⚠️ | **WON'T** | Natural key (aggregateId+version) is present; consumer-side dedup is a handler concern, not a framework gap. |
+| F19 — DLQ / poison-pill handling | ❌ | **G-10** (COULD) | AWS-native at infrastructure level; framework can only provide conventions. |
+| F20 — GDPR crypto-shredding | ❌ | **G-04** (MUST) | N1: regulatory blocker; PII stored in plaintext is non-compliant. |
+| F21 — Event encryption at rest | ❌ | **WON'T** | Infrastructure-layer concern (AWS RDS TDE); framework-level payload encryption is defence-in-depth only; revisit if compliance audit requires it. |
+| F22 — Multi-tenancy | ❌ | **WON'T** | N2 is explicitly out of profile. |
+| F23 — Causation / correlation metadata | ❌ | **G-06** (SHOULD) | D1 audit trail: partial via generic metadata field (§4 F23) — downgraded from hypothesised MUST to SHOULD (see "Priority revisions" below). |
+| F24 — Replay tooling | ⚠️ | **WON'T** | Replay flag exists; full orchestration is part of G-07 scope. |
+| F25 — Observability | ❌ | **G-09** (COULD) | Userland wrappers viable for small teams; COULD for D1 profile. |
+
+**Priority revisions from audit (Task 4.2 Step 0 reconciliation):**
+
+1. **F23 → G-06 downgraded MUST → SHOULD.** Pre-plan hypothesis: causation/correlation would be MUST. §4 F23 revealed a generic `metadata: METADATA` field exists on every event envelope (`packages/core/src/event/eventDetail.ts:15-16`). This means the field is present and applications can populate causationId/correlationId today by convention. The gap is enforcement (mandatory named fields) and tooling (chain traversal), not total absence. SHOULD is the correct priority for a workaround-exists gap in this profile.
+
+2. **F11 absorbed into G-05.** §4 F11 confirmed that the `version` field on `EventDetail` is the aggregate stream position, not an event schema version. This makes F11 (event type versioning) and F12 (upcaster pipeline) inseparable: you cannot implement upcasters without first deciding how schema versions are represented. G-05 covers both F11 and F12 under a single gap entry.
+
+3. **F24 replay tooling → WON'T (absorbed).** §4 F24 showed the replay *flag* (`PublishMessageOptions.replay`) is already present. The gap is the orchestration loop — which is the same capability as G-07's runner. No standalone gap entry warranted.
+
+---
+
+### G-01 — Transactional outbox
+
+```
+Category:          D
+Maps to feature:   #15 · Transactional outbox
+Current state:     §4 Feature 15 — Status ❌; ConnectedEventStore.pushEvent calls publishPushedEvent after the adapter write with no shared transaction.
+Priority:          MUST
+Effort:            L
+Depends on:        none
+Blocks:            none
+Breaking change:   no
+Impact surface:    core + event-storage-adapter-postgres
+```
+
+#### Problem statement
+
+Every call to `ConnectedEventStore.pushEvent` performs two independent async operations: (1) write the event to Postgres, (2) call `publishPushedEvent` → `PutEvents` on EventBridge. A process crash, Lambda timeout, or EventBridge throttle between these two steps leaves the event in the DB but never delivered to the bus. In a payment system, this means a `PaymentConfirmed` event is stored but the balance-projection worker never receives it, so the customer's account balance reads stale indefinitely — with no framework-level detection or recovery. Under load, EventBridge standard-bus throttling makes this failure mode more frequent, not less. The only recovery today is manual operator intervention, which violates the N4 zero-event-loss requirement.
+
+#### Target state
+
+The postgres adapter writes both the event row and an outbox row within a single `BEGIN` / `COMMIT` transaction. A relay worker (configurable, separate process) reads unprocessed outbox rows using `SELECT … FOR UPDATE SKIP LOCKED`, publishes each to EventBridge, then marks the row `processed`. Application code is unchanged: `ConnectedEventStore.pushEvent` remains the same call surface; the outbox is an implementation detail of the adapter.
+
+#### Design sketch
+
+```typescript
+// DDL diff — postgres adapter migration
+CREATE TABLE castore_outbox (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  event_store_id TEXT NOT NULL,
+  aggregate_id  TEXT NOT NULL,
+  version       INTEGER NOT NULL,
+  payload       JSONB NOT NULL,  -- full serialised message envelope
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  processed_at  TIMESTAMPTZ,
+  UNIQUE(event_store_id, aggregate_id, version)
+);
+
+// Adapter contract extension (sketch — not implementation)
+interface PostgresEventStorageAdapter {
+  // existing methods unchanged
+  // new: relay-worker support
+  getPendingOutboxEntries(limit: number): Promise<OutboxEntry[]>;
+  markOutboxProcessed(ids: UUID[]): Promise<void>;
+}
+
+// Relay worker (pseudo-sketch)
+async function relayWorker(adapter: PostgresEventStorageAdapter, bus: MessageBusAdapter) {
+  // uses advisory lock to ensure single active worker
+  const entries = await adapter.getPendingOutboxEntries(100);
+  for (const entry of entries) {
+    await bus.publishMessage(entry.payload);
+    await adapter.markOutboxProcessed([entry.id]);
+  }
+}
+```
+
+**Sequence (push path):**
+```
+command handler
+  └─ ConnectedEventStore.pushEvent
+       └─ BEGIN tx
+            ├─ INSERT INTO events (...)           -- F1 append-only
+            └─ INSERT INTO castore_outbox (...)   -- outbox row
+       └─ COMMIT
+       └─ return to caller  (no publish here)
+
+relay worker (separate process, advisory lock)
+  └─ SELECT ... FROM castore_outbox WHERE processed_at IS NULL LIMIT 100 FOR UPDATE SKIP LOCKED
+  └─ PutEvents → EventBridge
+  └─ UPDATE castore_outbox SET processed_at = now() WHERE id IN (...)
+```
+
+For large payloads (EventBridge 256 KB limit): store full event in the events table; outbox row contains a reference pointer (`event_store_id + aggregate_id + version`) rather than the full payload. The relay worker fetches the full event from the events table before publishing, or redirects to the S3 pointer pattern already used by `message-bus-adapter-event-bridge-s3`.
+
+#### Alternatives considered
+
+1. **Build in core (framework-managed outbox)** — Pros: consistent across all adapters; consumers get the guarantee automatically. Cons: core becomes storage-aware (requires Postgres-specific TX semantics); the in-memory adapter cannot implement a real outbox; adds complexity to the adapter contract. Decision: outbox logic belongs in the postgres adapter, not core.
+2. **Separate adapter / lib (this approach)** — Pros: keeps core clean; postgres adapter already owns the schema; relay worker is independently deployable and replaceable. Cons: in-memory adapter users get no outbox (acceptable — in-memory is test-only). Decision: preferred.
+3. **Userland convention + helper** — Pros: zero framework change. Cons: each project re-implements the same outbox pattern with different bugs; N4 is not met consistently. Decision: insufficient for MUST-have guarantee.
+4. **CDC via Debezium or logical replication** — Pros: truly zero-code at push time; works for all adapters; Debezium is battle-tested. Cons: adds Kafka / Debezium operational dependency (new infra category); adds latency; overkill for a single-Postgres deployment. Decision: revisit if multi-region is needed, not for initial fork.
+
+#### Why this priority?
+
+MUST. N4 (zero event loss) is a hard requirement for D1 finance. The dual-write gap is not a theoretical risk — it is a structural property of the current `ConnectedEventStore` implementation that manifests under any crash or throttle event. Without the outbox, the system cannot guarantee that a committed `PaymentConfirmed` event ever reaches downstream consumers. This is the single highest-priority gap for the D1 profile.
+
+#### Design considerations / open risks
+
+**R-09 (from spec §6 risk register, reclassified here):** The relay worker holds a Postgres advisory lock to prevent duplicate publishing. If the worker process crashes while holding the lock, the lock is held until the Postgres session times out (configurable `lock_timeout` / session disconnect). A dead lock held for > N seconds is a partial SPOF: no other relay worker can progress until the lock releases. Mitigation: use `pg_advisory_xact_lock` (transaction-scoped, not session-scoped) so the lock releases automatically on connection close; deploy ≥2 relay worker instances (only one active, others waiting); configure a short `lock_timeout` with an exponential-backoff retry in the worker start loop.
+
+#### Migration / rollout notes
+
+N/A — greenfield. Schema migration adds the `castore_outbox` table; existing `events` table is unchanged. Relay worker deployed as a separate process/Lambda alongside the application.
+
+---
+
+### G-02 — Snapshots
+
+```
+Category:          A
+Maps to feature:   #5 · Snapshots
+Current state:     §4 Feature 5 — Status ❌; getAggregate always replays from version 1; no snapshotStore abstraction.
+Priority:          MUST
+Effort:            L
+Depends on:        none
+Blocks:            none
+Breaking change:   no
+Impact surface:    core + event-storage-adapter-postgres + event-storage-adapter-in-memory
+```
+
+#### Problem statement
+
+`EventStore.getAggregate` (core `eventStore.ts:242–252`) always calls `getEvents` from version 1 with no floor, then folds all events through the reducer. For a financial account stream with 10 000+ events accumulated over years, every `getAggregate` call deserialises and processes the entire history — O(n) in stream length. At ~thousands of events this becomes a latency outlier; at tens of thousands it risks Lambda timeouts in the command handler path. The upstream docs acknowledge this and point to a userland convention (periodic snapshot via message-bus listener), but that convention is untyped, untested, and per-team — every project re-invents the same pattern differently.
+
+#### Target state
+
+The adapter contract gains two optional methods: `getLastSnapshot(aggregateId)` and `putSnapshot(aggregateId, version, state)`. `EventStore.getAggregate` checks for a snapshot first and, if found, calls `getEvents({ minVersion: snapshot.version + 1 })` to replay only the delta. Snapshot writes are triggered by the application at configurable intervals (e.g. every 100 events). The core `getAggregate` is unchanged from the consumer's perspective — the performance improvement is transparent.
+
+#### Design sketch
+
+```typescript
+// Adapter contract extension (core)
+interface EventStorageAdapter</* ... */> {
+  // existing methods unchanged
+  getLastSnapshot?: <STATE>(params: {
+    eventStoreId: string;
+    aggregateId: string;
+  }) => Promise<Snapshot<STATE> | undefined>;
+
+  putSnapshot?: <STATE>(params: {
+    eventStoreId: string;
+    aggregateId: string;
+    version: number;
+    state: STATE;
+  }) => Promise<void>;
+}
+
+interface Snapshot<STATE> {
+  aggregateId: string;
+  version: number;       // stream version at snapshot time
+  state: STATE;
+  createdAt: Date;
+}
+
+// DDL diff — postgres adapter
+CREATE TABLE castore_snapshots (
+  event_store_id  TEXT NOT NULL,
+  aggregate_id    TEXT NOT NULL,
+  version         INTEGER NOT NULL,
+  state           JSONB NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (event_store_id, aggregate_id, version)
+);
+```
+
+`getAggregate` modified behavior (pseudo-sketch):
+```
+1. call adapter.getLastSnapshot(aggregateId)
+2. if snapshot found:
+     events = getEvents({ minVersion: snapshot.version + 1 })
+     state  = fold(events, initialState: snapshot.state)
+3. else:
+     events = getEvents({ minVersion: 1 })
+     state  = fold(events, initialState: undefined)
+4. return { state, version: lastEvent.version }
+```
+
+#### Alternatives considered
+
+1. **Build in core (generic snapshot API)** — Pros: consistent across all adapters; consumers benefit automatically if adapter supports it. Cons: adapter contract grows; in-memory adapter must also implement it. Decision: preferred approach — the optional method pattern means adapters that don't support snapshots (in-memory, test) can omit implementation; core falls back gracefully.
+2. **Separate snapshot package** — Pros: zero change to core or adapters. Cons: consumers must wire two packages; snapshot-aware `getAggregate` requires replacing or wrapping the EventStore, which is awkward with the current concrete class. Decision: optional adapter methods are cleaner.
+3. **Userland convention + helper** — Pros: zero framework change. Cons: untyped, untested, per-team; the current state. Decision: insufficient for MUST-have N5 performance requirement.
+4. **External caching layer (Redis / application-level state)** — Pros: no schema change. Cons: cache invalidation, cold-start on new instances, cache-vs-store consistency bugs. Decision: not appropriate for event-sourced aggregate state; the canonical approach is a snapshot in the same store as the events.
+
+#### Why this priority?
+
+MUST. N5 (long aggregate streams) is a hard requirement. Financial account streams grow linearly with transaction volume; a 5-year-old account at typical transaction rates will have thousands of events. O(n) replay on every command violates the latency SLA before the product reaches its first anniversary. This is the second-highest-priority structural gap after the transactional outbox.
+
+#### Migration / rollout notes
+
+N/A — greenfield. The `castore_snapshots` table is additive; existing event tables are unchanged. Snapshot writes are opt-in at the application layer; the in-memory adapter can omit the optional methods with no functional impact on production code.
+
+---
+
+### G-03 — Idempotent writes
+
+```
+Category:          A
+Maps to feature:   #4 · Idempotent writes
+Current state:     §4 Feature 4 — Status ❌; no idempotency-key field on the event envelope or adapter contract.
+Priority:          MUST
+Effort:            M
+Depends on:        none
+Blocks:            none
+Breaking change:   no
+Impact surface:    core + event-storage-adapter-postgres
+```
+
+#### Problem statement
+
+A payment command handler calls `pushEvent` to record a `PaymentInitiated` event. If the Postgres write succeeds but the Lambda response is lost (network timeout, Lambda cold-start race, ALB timeout), the caller retries the command. The retry reaches a new Lambda instance that has no knowledge of the prior attempt. Because castore's only duplicate-prevention is version-based OCC (F2), and the aggregate version has already advanced, the retry succeeds and pushes a second `PaymentInitiated` event at version N+1. The customer is charged twice. Version-based OCC is orthogonal to idempotency: OCC detects concurrent writes at the same version, not retries of the same logical command at successive versions.
+
+#### Target state
+
+`pushEvent` accepts an optional `idempotencyKey` parameter. The postgres adapter stores the key in the events table (or a separate idempotency table) with a unique constraint. If a second call arrives with the same key, the adapter returns the previously stored result (same event detail) without inserting a duplicate row. The caller receives an identical success response regardless of whether the event was inserted now or on a prior attempt.
+
+#### Design sketch
+
+```typescript
+// Core adapter interface extension
+interface PushEventOptions {
+  force?: boolean;          // existing
+  idempotencyKey?: string;  // new — stable client-generated key
+}
+
+// Postgres adapter: DDL diff
+ALTER TABLE castore_events
+  ADD COLUMN idempotency_key TEXT,
+  ADD CONSTRAINT uq_idempotency_key
+    UNIQUE (event_store_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+// Adapter pushEvent behavior (sketch)
+// 1. Attempt INSERT with idempotency_key
+// 2. On UNIQUE violation on idempotency_key (PG code 23505 + constraint name):
+//    SELECT existing row → return as if newly inserted
+// 3. On UNIQUE violation on (aggregate_id, version) (OCC collision):
+//    raise EventAlreadyExistsError as today
+// Must distinguish the two constraint violations by constraint name.
+```
+
+**Note:** idempotency keys must be scoped to `event_store_id` to prevent cross-store key collisions. Key expiry (TTL cleanup) is out of scope for the initial implementation — keys can be retained indefinitely given the immutable log requirement.
+
+#### Alternatives considered
+
+1. **Build in core (idempotency tracking)** — Pros: available to all adapters. Cons: in-memory adapter has no natural idempotency table; core would need to maintain an in-memory map (acceptable for test-only adapter). Decision: implement in postgres adapter; in-memory adapter can use a plain Map as the key registry for tests.
+2. **Separate adapter / lib** — Pros: keeps adapter contract minimal. Cons: no standard way to surface idempotency; each adapter re-invents. Decision: the `PushEventOptions` change is the right extension point in core; implementation detail is adapter-specific.
+3. **Userland convention (command ID as aggregate ID prefix)** — Pros: zero framework change. Cons: pollutes aggregate ID semantics; does not prevent duplicate events within the same aggregate stream. Decision: insufficient for finance use case.
+4. **External idempotency service (e.g. AWS API Gateway idempotency, DynamoDB single-table)** — Pros: works across services. Cons: adds infrastructure dependency; does not prevent duplicates at the DB layer. Decision: DB-layer constraint is simpler and more reliable.
+
+#### Why this priority?
+
+MUST. The D1 finance profile requires exact-once semantics for payment commands. A retried payment must be indistinguishable from the original. Without idempotent writes, every network timeout is a potential double-charge — a liability that is unacceptable in a production financial system. This is distinct from OCC (F2), which guards against concurrent writes, not retries.
+
+#### Migration / rollout notes
+
+N/A — greenfield. The schema change adds a nullable column with a partial unique index. Existing rows (no `idempotency_key`) are unaffected.
+
+---
+
+### G-04 — GDPR crypto-shredding
+
+```
+Category:          E
+Maps to feature:   #20 · GDPR crypto-shredding
+Current state:     §4 Feature 20 — Status ❌; event payloads stored as plaintext JSONB; no key registry, no payload encryption.
+Priority:          MUST
+Effort:            XL
+Depends on:        none
+Blocks:            none
+Breaking change:   yes
+Impact surface:    core + event-storage-adapter-postgres + event-type-zod
+```
+
+#### Problem statement
+
+Customer PII — name, IBAN, email, address — is embedded in event payloads as plaintext JSONB in the Postgres `data` column (`packages/event-storage-adapter-postgres/src/adapter.ts:122`). When a customer exercises their GDPR Article 17 right-to-erasure, deleting the PII is architecturally impossible without either (a) physically deleting events (violating the immutable append-only log) or (b) overwriting payloads (corrupting the event history). Neither option is acceptable. Crypto-shredding solves this by encrypting PII with a per-data-subject key at write time; deleting the key renders the ciphertext permanently unreadable without touching the event rows. Without this, every EU customer onboarding creates a latent compliance liability.
+
+#### Target state
+
+At push time, each PII-bearing event type declares which fields contain PII and which data subject they belong to. The adapter encrypts those fields using the subject's current key (fetched from a key registry). At read time, `getEvents` transparently decrypts the fields using the same key. When a subject's key is deleted (GDPR erasure request), all their PII-bearing event payloads become ciphertext — the event rows remain intact, the immutable log is preserved, but the PII is cryptographically gone. An external KMS (AWS KMS or equivalent) holds the master keys; the per-subject data-encryption keys (DEKs) are derived from the master key and stored in a key registry table.
+
+#### Design sketch
+
+```typescript
+// Event type metadata extension (core + event-type-zod)
+interface EventTypeMetadata {
+  piiFields?: {
+    fieldPath: string;     // JSON path within payload e.g. "customerName"
+    subjectIdPath: string; // JSON path to the subject ID e.g. "customerId"
+  }[];
+}
+
+// EventType base class extension (sketch)
+abstract class EventType</* ... */> {
+  readonly piiMetadata?: EventTypeMetadata;
+}
+
+// Key registry DDL (postgres adapter)
+CREATE TABLE castore_subject_keys (
+  subject_id    TEXT NOT NULL,
+  key_version   INTEGER NOT NULL,
+  encrypted_dek BYTEA NOT NULL,  -- DEK encrypted with KMS master key
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at    TIMESTAMPTZ,     -- set on erasure request; DEK becomes unrecoverable
+  PRIMARY KEY (subject_id, key_version)
+);
+
+// Adapter pushEvent hook (sketch)
+// 1. For each PII field declared in event type metadata:
+//    a. Resolve subjectId from event payload
+//    b. Fetch or create DEK for subjectId from castore_subject_keys (via KMS)
+//    c. Encrypt field value with AES-256-GCM
+//    d. Replace field value with { ciphertext, keyVersion, iv } envelope
+// 2. INSERT encrypted payload into events table
+
+// Adapter getEvents hook (sketch)
+// 1. Fetch event rows
+// 2. For each PII-bearing event type:
+//    a. Fetch DEK for subjectId + keyVersion from castore_subject_keys
+//    b. If key deleted_at IS NOT NULL → return placeholder { shredded: true }
+//    c. Decrypt field with DEK + iv
+```
+
+**Erasure flow (ASCII):**
+```
+GDPR request → application → DELETE castore_subject_keys.encrypted_dek
+                               SET deleted_at = now()
+              → future getEvents → decryption fails gracefully
+                               → PII field = { shredded: true }
+```
+
+#### Alternatives considered
+
+1. **Build in core (generic encryption hook)** — Pros: applies to all adapters. Cons: core cannot depend on KMS; the encryption hook must be injectable, adding complexity. Decision: adapter-level encryption is cleaner; core provides only the event type metadata declaration (`piiMetadata`).
+2. **Separate adapter / lib (encryption adapter wrapper)** — Pros: no change to existing adapter contract; composable. Cons: wrapper must intercept `pushEvent` and `getEvents` at the adapter boundary — feasible but less discoverable. Decision: acceptable alternative; evaluate during implementation planning.
+3. **Userland convention (application-layer encryption)** — Pros: zero framework change. Cons: every command handler re-implements encryption; key-management bugs occur per handler; audit trail of which fields are encrypted is not machine-readable. Decision: insufficient for a framework-level MUST.
+4. **External service / proxy (Baffle, IronCore, Skyflow)** — Pros: battle-tested key management. Cons: adds a vendor dependency and a synchronous network call on every push/get; PII proxy latency may be unacceptable. Decision: evaluate as a KMS provider, not as a full encryption layer; the framework should remain provider-agnostic.
+
+#### Why this priority?
+
+MUST. N1 (GDPR/PII delete via crypto-shredding) is a regulatory requirement for a financial product operating in the EU. The absence of crypto-shredding is not a performance gap or a developer experience gap — it is a compliance blocker. Every EU customer registered before this feature ships represents a latent liability. This is the single highest-risk gap: the consequences of non-compliance (fines up to 4% of annual global turnover under GDPR Article 83) far outweigh the XL effort of implementing it correctly.
+
+**Highest-risk gap note:** The external KMS dependency (R-08 in the risk register) means key lifecycle management is outside the framework. Losing the master key is irreversible — all PII becomes permanently inaccessible, which may itself constitute a GDPR incident. This risk must be mitigated with key backup policies, KMS cross-region replication, and explicit organisational ownership of the KMS master key (R-08, §7).
+
+#### Migration / rollout notes
+
+**Breaking change — yes.** Events written before crypto-shredding is enabled contain plaintext PII. A one-time migration is required to re-encrypt historical PII-bearing events (read all, decrypt none — they are plaintext, re-write with encrypted payloads). This requires a maintenance window or a shadow-write migration. The `force=true` option on `pushEvent` can be used for the re-write phase. The migration plan must include a rollback path (re-write plaintext if encryption keys are lost). This is the most complex migration in the MUST phase; a spike / POC (spec §9 OQ-5) is strongly recommended before committing to the implementation plan.
+
+---
+
+### G-05 — Upcaster pipeline
+
+```
+Category:          C
+Maps to feature:   #11 · Explicit event type versioning + #12 · Upcaster pipeline
+Current state:     §4 Feature 11 — Status ⚠️ (version field is aggregate position, not schema version); §4 Feature 12 — Status ❌ (no transformation pipeline).
+Priority:          SHOULD
+Effort:            L
+Depends on:        none
+Blocks:            none
+Breaking change:   no
+Impact surface:    core + event-type-zod
+```
+
+#### Problem statement
+
+When a payment event's payload schema changes — for example, splitting `amount: number` into `{ amount: number; currency: string }` — application code must handle both the old and new shapes indefinitely. Without an upcaster pipeline, every event handler carries dead code for old payload shapes, and the domain model accumulates versions. Over a 5-year event horizon (N6) for a financial product, this technical debt compounds with every schema change. The current workaround is naming convention (`PAYMENT_INITIATED_V2`) with no framework-level awareness of version history, making it impossible to discover all historical shapes of an event type from the codebase.
+
+#### Target state
+
+Each `EventType` can declare an ordered list of upcaster functions: `(oldPayload: V_N) => V_N+1`. When `getEvents` returns events, the adapter (or a pipeline middleware layer) applies the applicable upcasters before returning to application code. Application code deals exclusively with the current schema version. The type system ensures upcaster output types are compatible with the current event type's payload type.
+
+#### Design sketch
+
+```typescript
+// Core — EventType upcaster registration
+interface Upcaster<FROM, TO> {
+  fromVersion: number;  // applies when event has this schema version
+  toVersion: number;
+  transform: (payload: FROM) => TO;
+}
+
+// EventType base class extension (sketch)
+abstract class EventType<PAYLOAD, METADATA> {
+  readonly schemaVersion: number;      // current canonical schema version (e.g. 3)
+  readonly upcasters?: Upcaster<unknown, unknown>[];
+}
+
+// ZodEventType extension
+class ZodEventType<PAYLOAD> extends EventType<PAYLOAD, METADATA> {
+  // existing: payloadSchema (for current version)
+  // new:
+  readonly schemaVersion: number;
+  readonly upcasters?: Upcaster<unknown, unknown>[];
+}
+
+// Event envelope extension — add schema version tracking
+interface EventDetail</* ... */> {
+  // existing fields: aggregateId, version, type, timestamp, payload, metadata
+  schemaVersion?: number;  // schema version at write time; absent = v1
+}
+
+// Upcaster pipeline (applied at getEvents read path)
+function applyUpcasters<T>(
+  event: EventDetail,
+  eventType: EventType<T, unknown>
+): EventDetail<T> {
+  let payload = event.payload;
+  let sv = event.schemaVersion ?? 1;
+  const upcasters = eventType.upcasters ?? [];
+  for (const up of upcasters) {
+    if (sv === up.fromVersion) {
+      payload = up.transform(payload);
+      sv = up.toVersion;
+    }
+  }
+  return { ...event, payload: payload as T, schemaVersion: sv };
+}
+```
+
+#### Alternatives considered
+
+1. **Build in core (generic upcaster registry in getEvents)** — Pros: consistent; applied transparently; type-safe output. Cons: core must know about event types to look up upcasters — requires registry injection. Decision: upcasters are declared on `EventType`; the pipeline is applied either in the adapter's `getEvents` or in a new `EventStore.getEventsWithUpcasting` method.
+2. **Separate adapter / lib (upcasting middleware)** — Pros: opt-in; no core change. Cons: consumers must wrap `getEvents` manually; easily forgotten. Decision: less safe than building into the read path.
+3. **Userland convention (switch statement per event type)** — Pros: zero framework change. Cons: every handler re-implements version detection; upcaster logic is scattered across the codebase; no machine-readable schema history. Decision: the current state; insufficient for N6.
+4. **External lib (avro-serde, protobuf schema registry)** — Pros: battle-tested schema evolution. Cons: introduces a binary serialisation dependency into an otherwise JSON-native system; schema registry is a new infrastructure concern; poor fit for EventBridge JSON envelope. Decision: out of profile for initial implementation; revisit if multi-service schema sharing becomes a requirement.
+
+#### Why this priority?
+
+SHOULD. N6 (schema evolution over 5+ year horizon) is a hard constraint for a financial product. The SHOULD (not MUST) classification reflects that at greenfield stage there are no existing event versions to upcast — the pipeline is not needed until the first breaking schema change. However, the longer this is deferred, the more event types accumulate without version metadata, making future upcaster wiring retroactively harder. Shipping G-05 before the first schema change is the low-cost path; shipping it after is a retrofit.
+
+#### Migration / rollout notes
+
+N/A — greenfield. Adding `schemaVersion` to the event envelope is a backward-compatible extension (absent = v1 by default). Existing events require no migration. Upcasters are only registered for event types that have changed; unversioned types are unaffected.
+
+---
+
+### G-06 — Causation / correlation metadata
+
+```
+Category:          E
+Maps to feature:   #23 · Causation / correlation metadata
+Current state:     §4 Feature 23 — Status ❌; named fields absent; generic metadata field exists as a convention workaround.
+Priority:          SHOULD
+Effort:            M
+Depends on:        none
+Blocks:            none
+Breaking change:   yes
+Impact surface:    core + event-storage-adapter-postgres + command-zod
+```
+
+#### Problem statement
+
+In a financial audit, regulators require answers to "which user session triggered this payment event?" and "which command caused this balance-update event?" Today, castore events carry no `causationId` or `correlationId`. Developers can store these in the generic `metadata` field, but there is no framework enforcement — some command handlers will populate them, others will not, and the audit trail becomes incomplete. An incomplete audit trail in a financial system is a compliance risk: if an auditor cannot trace a suspicious transaction to its originating request, the organisation must argue from application logs alone, which are mutable and less trustworthy than the immutable event log.
+
+#### Target state
+
+`EventDetail` gains mandatory `causationId` and `correlationId` fields at the core level. The adapter contract enforces their presence at write time (type-level constraint). `command-zod` populates `correlationId` from a request-scoped context object and `causationId` from the command's own ID. Downstream events created in response to other events inherit the same `correlationId` and set `causationId` to the triggering event's ID.
+
+#### Design sketch
+
+```typescript
+// Core — EventDetail extension
+interface EventDetail</* ... */> {
+  // existing fields unchanged
+  causationId:  string;   // ID of the command or event that caused this event
+  correlationId: string;  // ID of the originating request / user session
+}
+
+// command-zod — command execution context
+interface CommandContext {
+  correlationId: string;
+  // populated from HTTP request header X-Correlation-ID or generated if absent
+}
+
+// Adapter — postgres DDL diff
+ALTER TABLE castore_events
+  ADD COLUMN causation_id   TEXT NOT NULL DEFAULT '',  -- populated by app
+  ADD COLUMN correlation_id TEXT NOT NULL DEFAULT '';
+
+// Constraint: NOT NULL enforced at the type level; DEFAULT '' is migration-only
+// After migration, remove DEFAULT and enforce NOT NULL at DB level
+
+// EventStore.pushEvent type change (sketch)
+interface PushEventInput</* ... */> {
+  // existing fields
+  causationId:  string;   // now required
+  correlationId: string;  // now required
+}
+```
+
+#### Alternatives considered
+
+1. **Build in core as mandatory fields (this approach)** — Pros: type-level enforcement; no handler can omit them; audit trail is complete. Cons: breaking change to `EventDetail`; all existing push-event call sites must be updated. Decision: correct approach given regulatory requirement.
+2. **Separate adapter / lib** — Not applicable — this is an envelope field, not an adapter-specific concern.
+3. **Userland convention via metadata (current state)** — Pros: zero change. Cons: optional by nature; incomplete audit trails. Decision: insufficient for a compliance-relevant SHOULD.
+4. **External correlation service / OpenTelemetry** — Pros: industry standard. Cons: OTel trace IDs are not stable business-audit identifiers; they change on every deployment and cannot be cross-referenced from the event log to the OTEL backend independently. Decision: OTel for operational observability (G-09); causation/correlation for business audit trail are separate concerns.
+
+#### Why this priority?
+
+SHOULD. The D1 financial audit trail requirement makes causation/correlation metadata important. It is SHOULD (not MUST) because the generic `metadata` field provides a workaround today — a motivated team can populate causationId/correlationId manually and consistently. The MUST threshold would require absence of any workaround; since the workaround exists, the gap is significant friction rather than a blocker. Priority revisions from audit: this was a hypothesised MUST pre-audit; §4 F23 showing the `metadata` field downgraded it to SHOULD.
+
+#### Migration / rollout notes
+
+**Breaking change — yes.** Adding mandatory `causationId` and `correlationId` to `EventDetail` changes the type signature at all push-event call sites. For a greenfield project this is manageable — all call sites are under team control. The migration is a compiler-guided find-and-fix: `tsc` will flag every `pushEvent` call that does not supply the new fields. Postgres schema migration adds the columns with `DEFAULT ''` temporarily (to handle rows written before migration), then removes the default and adds `NOT NULL` after backfilling.
+
+---
+
+### G-07 — Projection runner with checkpoints
+
+```
+Category:          B
+Maps to feature:   #6 · Projection runner with checkpoints
+Current state:     §4 Feature 6 — Status ❌; no pull-based catch-up subscription; no checkpoint storage.
+Priority:          SHOULD
+Effort:            XL
+Depends on:        none
+Blocks:            [G-08], [G-10]
+Breaking change:   no
+Impact surface:    core + event-storage-adapter-postgres (new package: projections)
+```
+
+#### Problem statement
+
+The only event-distribution mechanism in castore is push-based: `ConnectedEventStore.pushEvent` fires a message to EventBridge after committing. A projection worker that is offline for any reason — deployment, crash, scaling event — has no way to catch up on events it missed. The framework provides no pull-based subscription, no checkpoint, and no ordered global event sequence from which to resume. In a financial system, a balance projection that misses five events shows the wrong balance; there is no self-healing mechanism. The EventBridge retry window (24 hours for standard buses) is the only protection, and it is invisible to the framework.
+
+#### Target state
+
+A new `@castore/projections` package provides a pull-based runner: a worker loop that calls `adapter.getEvents({ from: lastCheckpoint, limit: N })` in batches, applies each event to the projection handler, and writes the new checkpoint to a durable store before advancing. The runner restarts from the last checkpoint on process restart. Catch-up after a deployment gap is automatic. The runner uses the postgres adapter's `getEvents` API — no new adapter methods required for a basic implementation.
+
+#### Design sketch
+
+```typescript
+// New package: @castore/projections
+
+interface ProjectionHandler<EVENT, STATE> {
+  handleEvent(event: EVENT, currentState: STATE): Promise<STATE>;
+}
+
+interface CheckpointStore {
+  getCheckpoint(projectionId: string): Promise<CheckpointPosition | undefined>;
+  saveCheckpoint(projectionId: string, position: CheckpointPosition): Promise<void>;
+}
+
+interface CheckpointPosition {
+  aggregateId: string;   // for per-aggregate runners
+  version: number;
+  globalSeq?: number;    // if Postgres global sequence column is added
+}
+
+// Runner loop (sketch)
+async function runProjection<EVENT>(params: {
+  projectionId: string;
+  eventStore:   EventStore;
+  handler:      ProjectionHandler<EVENT, unknown>;
+  checkpoints:  CheckpointStore;
+  batchSize?:   number;  // default 100
+}) {
+  const pos = await params.checkpoints.getCheckpoint(params.projectionId);
+  const events = await params.eventStore.getEvents({ from: pos, limit: params.batchSize });
+  for (const event of events) {
+    await params.handler.handleEvent(event, /* currentState */);
+    await params.checkpoints.saveCheckpoint(params.projectionId, toPosition(event));
+  }
+  // backoff + loop
+}
+
+// Checkpoint table DDL (postgres)
+CREATE TABLE castore_projection_checkpoints (
+  projection_id  TEXT PRIMARY KEY,
+  aggregate_id   TEXT,
+  version        INTEGER,
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+**Note on global ordering:** The current postgres adapter stores events per-aggregate with no global sequence column. A basic per-aggregate runner is feasible with the existing schema. A fully ordered global runner (required for multi-aggregate projections like total balance) requires adding a `global_seq BIGSERIAL` column to the events table — a schema migration. This is a design decision to make before implementing G-07; the gap entry does not mandate a specific ordering strategy.
+
+#### Alternatives considered
+
+1. **Build in core** — Pros: consistent. Cons: core becomes projection-aware; adds significant complexity to the core package. Decision: separate package is the right separation of concerns.
+2. **Separate adapter / lib (this approach)** — Pros: projections are a distinct concern from the event store; new package allows independent versioning. Cons: consumers must install and learn an additional package. Decision: preferred.
+3. **Userland convention (application writes its own runner)** — Pros: zero framework change. Cons: every project reinvents the checkpoint pattern; stale projections are invisible; catch-up bugs are per-team. Decision: insufficient for a production financial system.
+4. **CDC-based projection (Debezium / logical replication)** — Pros: zero-lag delivery; no polling overhead. Cons: adds Kafka / Debezium infrastructure; complicates local development; no guarantee of event order for multi-table CDC. Decision: out of scope for initial implementation; viable if the event volume grows beyond what a polling runner can sustain.
+
+#### Why this priority?
+
+SHOULD. The projection runner is not a D1 correctness blocker in the short term (EventBridge retries provide a limited safety net), but it becomes critical within weeks of production use when a deployment gap causes a projection to fall behind and operational recovery requires manual intervention. The XL effort estimate reflects this is an architectural subsystem, not a feature addition. It is SHOULD rather than MUST because the push-based delivery via EventBridge is workable for a small event volume — it is a reliability gap, not a zero-day gap.
+
+#### Migration / rollout notes
+
+N/A — greenfield. The new `@castore/projections` package is an additive dependency; existing application code is unchanged. The checkpoint table DDL is run as a one-time migration. If a global sequence column is chosen (see design note above), the events table migration is the most impactful schema change in this gap and should be planned carefully.
+
+---
+
+### G-08 — Projection rebuild tooling
+
+```
+Category:          B
+Maps to feature:   #7 · Projection rebuild
+Current state:     §4 Feature 7 — Status ❌; no rebuild orchestration in scope.
+Priority:          COULD
+Effort:            M
+Depends on:        [G-07]
+Blocks:            none
+Breaking change:   no
+Impact surface:    core + event-storage-adapter-postgres (new package: projections)
+```
+
+#### Problem statement
+
+When projection logic changes — a new field added to the account balance view, a query index rebuilt, a bug fixed in a financial calculation — the read model must be rebuilt from the full event history. Without rebuild tooling, teams write bespoke scripts that loop over all aggregate IDs, fetch events, and replay. These scripts are untested, don't handle partial failures, and produce non-deterministic results if the event store is being written to concurrently during the rebuild. In a financial system, a non-deterministic projection rebuild can produce a balance snapshot that does not match the event history.
+
+#### Target state
+
+The `@castore/projections` package provides a `rebuildProjection` function that resets the checkpoint to genesis, replays all events through the projection handler in deterministic order, and saves the final checkpoint. The rebuild supports pause/resume via the checkpoint mechanism (same interface as the live runner). A `--dry-run` flag allows validating the rebuild path without writing to the read model.
+
+#### Design sketch
+
+```typescript
+// Extends G-07 @castore/projections package
+
+async function rebuildProjection<EVENT>(params: {
+  projectionId:      string;
+  eventStore:        EventStore;
+  handler:           ProjectionHandler<EVENT, unknown>;
+  checkpoints:       CheckpointStore;
+  readModelStore:    ReadModelStore;  // injected; reset logic is model-specific
+  batchSize?:        number;
+  dryRun?:           boolean;
+}) {
+  if (!params.dryRun) {
+    await params.readModelStore.truncate(params.projectionId);
+    await params.checkpoints.saveCheckpoint(params.projectionId, GENESIS);
+  }
+  // then runs the same loop as runProjection from GENESIS
+}
+```
+
+#### Alternatives considered
+
+1. **Build in core** — Pros: centralised. Cons: same separation-of-concerns argument as G-07. Decision: part of the `@castore/projections` package.
+2. **Separate adapter / lib (part of projections package)** — Preferred — rebuild and run are two modes of the same runner.
+3. **Userland convention** — Current state; insufficient for reliable financial projection rebuilds.
+4. **External tool (temporal.io, Inngest)** — Pros: managed durable execution. Cons: adds an infrastructure dependency for what is fundamentally a data-processing loop. Decision: overkill for the initial implementation.
+
+#### Why this priority?
+
+COULD. Projection rebuild is needed in production but only when projection logic changes — an infrequent event at the start of a project. The COULD classification reflects that the first rebuild can be done with a bespoke script; the tooling pays off when rebuilds become routine (after the first 3–6 months of production). It is blocked on G-07 anyway (runner must exist before rebuild is meaningful), which means the natural sequencing puts it in Phase 3 regardless.
+
+#### Migration / rollout notes
+
+N/A — greenfield. Additive to the `@castore/projections` package. No schema change beyond what G-07 already introduces.
+
+---
+
+### G-09 — Observability (OpenTelemetry)
+
+```
+Category:          E
+Maps to feature:   #25 · Observability
+Current state:     §4 Feature 25 — Status ❌; no structured logs, traces, or metrics in any in-scope package.
+Priority:          COULD
+Effort:            M
+Depends on:        none
+Blocks:            none
+Breaking change:   no
+Impact surface:    core + event-storage-adapter-postgres + message-bus-adapter-event-bridge
+```
+
+#### Problem statement
+
+There are no framework-level hook points in castore for injecting a tracer, logger, or metrics emitter. Every team that wants to trace event-sourcing operations (command latency, event publish latency, outbox queue depth) must wrap each `pushEvent` / `getAggregate` call manually in their application code. This produces inconsistent instrumentation: some handlers emit spans, others do not; the event store itself is a black box from the tracing perspective. In a financial system, the ability to trace a payment command end-to-end from HTTP request through event write through projection update is a production debugging requirement.
+
+#### Target state
+
+Core exposes an optional `Tracer` interface (injectable via `EventStore` constructor or a global configure call). When a tracer is injected, the framework emits spans for `pushEvent`, `getEvents`, `getAggregate`, and bus publish operations. The tracer interface is compatible with the OpenTelemetry `Tracer` API so that any OTel-compliant backend (Jaeger, Honeycomb, AWS X-Ray) can be used without framework changes.
+
+#### Design sketch
+
+```typescript
+// Core — injectable tracer interface
+interface CastoreTracer {
+  startSpan(name: string, attributes?: Record<string, string | number>): CastoreSpan;
+}
+interface CastoreSpan {
+  end(status?: 'ok' | 'error'): void;
+  setAttribute(key: string, value: string | number): void;
+}
+
+// EventStore constructor extension (sketch)
+class EventStore</* ... */> {
+  constructor(params: {
+    // existing params
+    tracer?: CastoreTracer;  // optional; no-op if absent
+  }) {}
+}
+
+// Instrumented pushEvent (sketch — not implementation)
+// span = tracer.startSpan('castore.pushEvent', { aggregateId, eventType })
+// try { await adapter.pushEvent(...); span.end('ok') }
+// catch (e) { span.setAttribute('error', e.message); span.end('error'); throw e }
+```
+
+#### Alternatives considered
+
+1. **Build in core (injected tracer, this approach)** — Pros: consistent across all adapters; opt-in (no OTel dependency when tracer is absent). Cons: adds interface to core. Decision: preferred — the `CastoreTracer` interface keeps the OTel dependency optional.
+2. **Separate adapter / lib (OTel adapter wrapper)** — Pros: no core change. Cons: wrapping every adapter is verbose and fragile. Decision: less ergonomic than a core hook.
+3. **Userland convention (application wraps each call)** — Pros: zero framework change; viable today. Cons: inconsistent coverage; black-box spans. Decision: acceptable for now (COULD); userland wrappers are the current workaround.
+4. **External service (Datadog agent, AWS X-Ray auto-instrumentation)** — Pros: zero code. Cons: auto-instrumentation may not be granular enough for event-level attributes; framework-specific span names are lost. Decision: complementary, not a replacement.
+
+#### Why this priority?
+
+COULD. Observability is important for production operations but is not a correctness blocker. Userland wrappers are a viable workaround for a small team. The COULD classification reflects that a team can ship a production financial system without framework-native tracing; the cost is instrumentation boilerplate and inconsistent span coverage. The gap becomes more pressing as the team scales.
+
+#### Migration / rollout notes
+
+N/A — greenfield. The tracer injection is opt-in; existing code is unaffected. The `CastoreTracer` interface is designed to be satisfied by wrapping `opentelemetry-api`'s `Tracer` with a thin adapter.
+
+---
+
+### G-10 — DLQ convention
+
+```
+Category:          D
+Maps to feature:   #19 · Dead-letter queue / poison-pill handling
+Current state:     §4 Feature 19 — Status ❌; DLQ is AWS-native at infrastructure level; castore has no API surface.
+Priority:          COULD
+Effort:            S
+Depends on:        [G-07]
+Blocks:            none
+Breaking change:   no
+Impact surface:    message-bus-adapter-event-bridge
+```
+
+#### Problem statement
+
+When an EventBridge consumer (Lambda) throws an unhandled exception, EventBridge retries the event according to the rule's retry policy (default: 24 hours, 185 retries). After exhaustion the event is routed to a DLQ if one is configured — but this configuration is entirely in the CDK/CloudFormation stack, invisible to castore. There is no framework-level convention for what the DLQ message should contain (original event, failure reason, retry count), no helper for re-processing DLQ messages through the original handler, and no castore-aware DLQ target type. In a financial system, a poison-pill payment event silently failing retries for 24 hours before landing in an unchecked DLQ is an operational incident.
+
+#### Target state
+
+The `message-bus-adapter-event-bridge` package exports a `DlqMessageEnvelope` type that wraps the original message with `{ originalMessage, failureReason, retryCount, timestamp }`. A `replayFromDlq` utility accepts a list of DLQ messages and re-publishes them to the bus with the `replay=true` flag. Infrastructure (CDK) can reference the envelope type to configure a typed DLQ Lambda handler.
+
+#### Design sketch
+
+```typescript
+// message-bus-adapter-event-bridge
+interface DlqMessageEnvelope<MESSAGE> {
+  originalMessage:  MESSAGE;
+  failureReason:    string;
+  retryCount:       number;
+  failedAt:         string;  // ISO timestamp
+  handlerName:      string;
+}
+
+async function replayFromDlq<MESSAGE>(params: {
+  dlqEntries: DlqMessageEnvelope<MESSAGE>[];
+  bus:        MessageBusAdapter;
+}): Promise<void> {
+  for (const entry of params.dlqEntries) {
+    await bus.publishMessage(entry.originalMessage, { replay: true });
+  }
+}
+```
+
+**Note:** DLQ *routing* (setting `DeadLetterConfig` on EventBridge rules) remains an infrastructure concern. This gap covers only the framework convention for the envelope shape and the replay helper.
+
+#### Alternatives considered
+
+1. **Build in core** — Not applicable — this is EventBridge-specific behaviour.
+2. **Separate adapter / lib (this approach)** — Add to `message-bus-adapter-event-bridge`. Pros: collocated with the EventBridge adapter; small scope. Decision: preferred.
+3. **Userland convention** — Current state; varies per team. Decision: acceptable workaround but a typed envelope reduces mistakes.
+4. **External service (AWS SQS DLQ + EventBridge Pipes)** — Pros: managed retry and DLQ routing. Cons: no framework-level structured failure reason. Decision: complementary at infrastructure layer; the framework convention adds value on top.
+
+#### Why this priority?
+
+COULD. DLQ handling at the framework level is a convention improvement, not a correctness feature — AWS EventBridge provides the retry and DLQ mechanics natively. The S effort estimate reflects that this is a type definition plus a small helper, not a subsystem. It depends on G-07 because a DLQ is most useful when there is a runner that can replay from it; before G-07, replaying DLQ messages requires bespoke scripts in any case.
+
+#### Migration / rollout notes
+
+N/A — greenfield. The `DlqMessageEnvelope` type and `replayFromDlq` helper are additive exports; no existing API is changed.
+
+---
+
+### 5.6 Explicit non-goals (WON'T)
+
+The following features are candidates for future consideration but are explicitly out of scope for the current D1+N1+N4+N5+N6 profile and roadmap:
+
+| Feature | Rejection reason |
+|---|---|
+| F8 — Projection lag monitoring | Depends on G-07 (projection runner); deferred until G-07 ships. |
+| F9 — Inline (sync) projections | `onEventPushed` hook covers in-scope use cases; full transactional inline projection is a large subsystem blocked on G-07 design decisions. Revisit post-Phase-2. |
+| F13 — Event type retirement / rename | Depends on G-05 (upcaster pipeline); low urgency at greenfield stage; revisit in Phase 3. |
+| F14 — Tolerant deserialization | 🔶 — Zod `.strip()` default provides tolerance; upgrading to explicit `.passthrough()` is a per-schema opt-in; no framework gap warranted. |
+| F16 — At-least-once + dedup | Natural dedup key (aggregateId + version) is present in the message envelope; consumer-side dedup is a handler responsibility, not a framework gap. |
+| F21 — Event encryption at rest | AWS RDS TDE covers the infrastructure concern; framework-level payload encryption is defence-in-depth only; classified as out of profile unless compliance audit requires it. |
+| F22 — Multi-tenancy | N2 (multi-tenancy) is explicitly out of profile for this analysis (spec §0). Single-tenant design throughout. |
+| F24 — Replay tooling (standalone) | The `replay` flag on `PublishMessageOptions` is already present; full orchestration is covered by G-07 scope. |
+
+---
+
+### 5.7 Dependency DAG
+
+```mermaid
+graph TD
+    G01[G-01 Transactional outbox<br/>MUST · L]
+    G02[G-02 Snapshots<br/>MUST · L]
+    G03[G-03 Idempotent writes<br/>MUST · M]
+    G04[G-04 GDPR crypto-shredding<br/>MUST · XL]
+    G05[G-05 Upcaster pipeline<br/>SHOULD · L]
+    G06[G-06 Causation / correlation<br/>SHOULD · M]
+    G07[G-07 Projection runner<br/>SHOULD · XL]
+    G08[G-08 Projection rebuild<br/>COULD · M]
+    G09[G-09 Observability OTel<br/>COULD · M]
+    G10[G-10 DLQ convention<br/>COULD · S]
+
+    G07 --> G08
+    G07 --> G10
+    G05 --> G04
+```
+
+**Edge enumeration:**
+
+| Edge | Criterion (spec §5 DAG edge criterion) |
+|---|---|
+| G-07 → G-08 | Rebuild tooling cannot be designed until the runner's `CheckpointStore` API and runner loop contract are decided. |
+| G-07 → G-10 | The `replayFromDlq` helper is only meaningful once a runner exists to consume the replayed messages; the envelope type depends on the runner's event input type. |
+| G-05 → G-04 | Crypto-shredding tombstones (shredded field placeholders) must be distinguishable from valid event payloads by upcasters. If upcasters are added after shredding is deployed, they must handle the `{ shredded: true }` placeholder shape. Deciding the upcaster API first locks the tombstone shape. |
+
+**Acyclicity check:** G-04 depends on G-05; G-05 has no upstream dependencies. G-08 and G-10 depend on G-07; G-07 has no upstream dependencies. G-01, G-02, G-03, G-06, G-09 have no dependencies. No cycles exist. All paths are: source → sink.
+
+**Independent gaps (can parallelize):** G-01, G-02, G-03, G-06, G-09 are fully independent — they can be implemented in parallel by separate contributors. G-05 should be started before (or concurrently with) G-04 given the edge. G-07 is a prerequisite for G-08 and G-10 and should be started early in Phase 2.
+
+**DAG edge count:** 3 edges.
 
 ## 6. Prioritized roadmap
 
