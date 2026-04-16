@@ -15,9 +15,9 @@ Castore (`@castore/castore`) is a TypeScript event-sourcing framework built on a
 
 The project is at a **greenfield stage** — nothing is in production yet, which gives the luxury of choosing a healthy baseline before committing to any architecture. This analysis therefore aims to identify what must be added or changed before the fork is trusted for production use, not to assess castore after years of accumulated real-world load.
 
-Eight packages are in scope for this analysis and for all future implementation work: `core`, `event-storage-adapter-postgres`, `event-storage-adapter-in-memory` (tests only), `message-bus-adapter-event-bridge`, `message-bus-adapter-event-bridge-s3`, `event-type-zod`, `command-zod`, and `lib-test-tools`. Ten packages are explicitly out of scope and will be removed during a separate "Fork & Trim" sub-project: `event-storage-adapter-dynamodb`, `event-storage-adapter-http`, `redux` integration, `message-bus-adapter-sqs`, `message-bus-adapter-sqs-s3`, `message-queue-adapter-in-memory`, `message-bus-adapter-in-memory`, `command-json-schema`, `event-type-json-schema`, `lib-dam`, and `lib-react-visualizer`.
+Eight packages are in scope for this analysis and for all future implementation work: `core`, `event-storage-adapter-postgres`, `event-storage-adapter-in-memory` (tests only), `message-bus-adapter-event-bridge`, `message-bus-adapter-event-bridge-s3`, `event-type-zod`, `command-zod`, and `lib-test-tools`. Eleven packages are explicitly out of scope and will be removed during a separate "Fork & Trim" sub-project (the spec groups two pairs as bundled items, giving the spec's count of ten): `event-storage-adapter-dynamodb`, `event-storage-adapter-http`, `redux` integration, `message-bus-adapter-sqs`, `message-bus-adapter-sqs-s3`, `message-queue-adapter-in-memory`, `message-bus-adapter-in-memory`, `command-json-schema`, `event-type-json-schema`, `lib-dam`, and `lib-react-visualizer`.
 
-The domain profile driving all prioritization is **D1 — Financial / payments**: long-lived account streams, regulatory audit trail, and exact-once semantics. Four non-functional requirements are active constraints throughout:
+The domain profile driving all prioritization is **D1 — Financial / payments**: long-lived account streams, regulatory audit trail, and exact-once semantics. Four non-functional requirements are active constraints throughout (N2 multi-tenancy and N3 high-throughput are out of profile for this analysis — see spec §0):
 
 - **N1** — GDPR / PII delete via crypto-shredding
 - **N4** — Zero event loss (transactional outbox / exactly-once publish)
@@ -62,7 +62,7 @@ The following competitors were considered and deliberately excluded:
 
 ### 1.4 Reader orientation
 
-This document is written for two audiences with different entry points. **Executives and decision-makers** should begin at §6 (Prioritized roadmap), specifically the section opener which presents the go/no-go recommendation, MoSCoW counts, total Phase 1 effort estimate, and the top risks — the entire analysis distilled to one page. **Engineers and technical leads** should proceed directly to §5 (Gap detail catalogue), which contains per-gap problem statements, design sketches, effort estimates, and dependency relationships that translate directly into implementation planning. §4 (Castore current state) is the primary research layer: each of the 26 features is audited with code references, guarantees, and known limits, and it is the authoritative input to both §5 and §6. §3 (Competitor matrix) provides context for prioritization decisions — understanding where castore sits relative to the field makes it easier to judge whether a gap is a critical deficit or an acceptable trade-off for the internal-fork profile.
+Executives should begin at §6's opener, which delivers the go/no-go recommendation, MoSCoW counts, total Phase 1 effort estimate, and top risks on one page. Engineers working on MUST gaps should start at §5 (Gap detail catalogue), where per-gap problem statements, design sketches, effort estimates, and dependency relationships translate directly into implementation planning. §4 (Castore current state) is the authoritative research layer — 26 features audited with code references, guarantees, and known limits — and is the direct input to both §5 and §6. §3 (Competitor matrix) provides prioritization context: it shows where castore sits relative to the field so readers can judge whether a gap is a critical deficit or an acceptable trade-off.
 
 ## 2. Canonical ES feature catalogue
 
@@ -88,7 +88,7 @@ Some business operations must atomically update two or more aggregate streams �
 
 **F4 — Idempotent writes**
 
-An idempotent write operation allows the caller to supply a stable client-generated key alongside an event batch; if the same key is seen again — for example because a network timeout caused the client to retry — the store returns the previously stored result rather than creating a duplicate event. Idempotency is distinct from optimistic concurrency: OCC prevents races between independent writers, while idempotency prevents duplicates from retries by the *same* writer. In financial systems, where retried payment commands must not produce double charges, idempotent writes are a first-class safety requirement (Vernon, *Implementing Domain-Driven Design*, ch. 8).
+An idempotent write operation allows the caller to supply a stable client-generated key alongside an event batch; if the same key is seen again — for example because a network timeout caused the client to retry — the store returns the previously stored result rather than creating a duplicate event. This retry-safety property ensures that re-sending a failed request produces no additional side effects. In financial systems, where retried payment commands must not produce double charges, idempotent writes are a first-class safety requirement (Vernon, *Implementing Domain-Driven Design*, ch. 8).
 
 **F5 — Snapshots**
 
@@ -136,7 +136,7 @@ An upcaster is a function that transforms an event from version N to version N+1
 
 **F13 — Event type retirement / rename**
 
-Event type retirement is the controlled removal or renaming of an event type after all existing streams using it have been migrated or archived. In practice this involves: (1) marking the type as deprecated so new writes are rejected, (2) providing an upcaster that maps old events to a replacement type, and (3) eventually removing the old type from the schema registry once no unprocessed events of that type remain. Without a formal retirement process, old event types accumulate indefinitely and the domain model becomes cluttered with historical artefacts that developers must carefully avoid.
+Event type retirement is the controlled removal or renaming of an event type after all existing streams using it have been migrated or archived. Controlled deprecation involves marking the type as deprecated, providing an upcaster to a replacement type, and eventually removing the old type once no unprocessed events remain. Without a formal retirement process, old event types accumulate indefinitely and the domain model becomes cluttered with historical artefacts that developers must carefully avoid.
 
 **F14 — Tolerant deserialization**
 
@@ -176,7 +176,7 @@ A dead-letter queue (DLQ) is a separate queue to which messages that have failed
 
 **F20 — GDPR crypto-shredding**
 
-Crypto-shredding is the technique of encrypting personally identifiable information (PII) in event payloads with a per-data-subject encryption key, so that deleting the key makes the PII cryptographically inaccessible — satisfying GDPR Article 17 (right to erasure) without physically deleting events from the immutable log. Each data subject has a unique key stored in a key registry; all events carrying that subject's PII are encrypted with their key at write time, and the key is deleted upon erasure request. The framework must provide integration points for key lookup, encryption at push, and decryption at read, along with a story for key lifecycle management via an external KMS.
+Crypto-shredding is the technique of encrypting personally identifiable information (PII) in event payloads with a per-data-subject encryption key, so that deleting the key makes the PII cryptographically inaccessible — satisfying GDPR Article 17 (right to erasure) without physically deleting events from the immutable log. Each data subject has a unique key stored in a key registry; all events carrying that subject's PII are encrypted with their key at write time, and the key is deleted upon erasure request.
 
 **F21 — Event encryption at rest**
 
@@ -188,7 +188,7 @@ Multi-tenancy allows a single event store deployment to isolate streams belongin
 
 **F23 — Causation / correlation metadata**
 
-Causation and correlation IDs are metadata fields on each event that allow auditors to reconstruct the causal chain of events in a distributed system. The correlation ID groups all events that belong to the same originating request or user session; the causation ID identifies the specific command or event that directly caused this event to be emitted. Together they provide an audit trail that answers "why did this event happen and in what context?" — a requirement for financial regulatory compliance, incident investigation, and debugging production issues in distributed systems (Vernon, IDDD, ch. 7).
+Causation and correlation IDs are metadata fields on each event that allow auditors to reconstruct the causal chain of events in a distributed system. The correlation ID groups all events that belong to the same originating request or user session; the causation ID identifies the specific command or event that directly caused this event to be emitted. Together they provide an audit trail that answers "why did this event happen and in what context?" (Vernon, IDDD, ch. 7).
 
 **F24 — Replay tooling**
 
@@ -196,7 +196,7 @@ Replay tooling provides a controlled mechanism — typically a CLI script or fra
 
 **F25 — Observability**
 
-Observability in an event-sourcing framework means that the framework emits structured logs, distributed traces (e.g. OpenTelemetry spans), and metrics (e.g. event commit latency, projection lag, outbox queue depth) that allow operators to understand the system's behavior in production without needing to instrument every individual command handler. Framework-level observability is preferable to userland instrumentation because it captures infrastructure-level timing and error information that application code cannot easily access, and it ensures that all operations — including internal retry loops and outbox relay workers — are visible.
+Observability in an event-sourcing framework means that the framework emits structured logs, distributed traces (e.g. OpenTelemetry spans), and metrics (e.g. event commit latency, projection lag, outbox queue depth) that allow operators to understand the system's behavior in production without needing to instrument every individual command handler.
 
 **F26 — Testing utilities**
 
@@ -205,14 +205,17 @@ Testing utilities are framework-provided helpers that make it easy to write fast
 ## 3. Competitor matrix
 
 > TODO: see spec §3 for template.
+> TODO: reuse F-numbers from §2 verbatim.
 
 ## 4. Castore current state — per feature
 
 > TODO: see spec §4 for template.
+> TODO: reuse F-numbers from §2 verbatim.
 
 ## 5. Gap detail catalogue
 
 > TODO: see spec §5 for template.
+> TODO: reuse F-numbers from §2 verbatim.
 
 ## 6. Prioritized roadmap
 
