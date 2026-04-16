@@ -265,7 +265,7 @@ This section profiles four primary competitors and one DIY-Postgres control base
 
 **Stack:** C# / .NET (server); TS/JS client (`@eventstore/db-client`, 175 stars); dedicated server deployment (TCP/gRPC); storage is EventStoreDB-proprietary (append-only log files on disk); license: server is BSL / commercial (Community Edition for dev, Enterprise for production at scale); client is Apache 2.0.
 
-**Maturity signals:** 5 775 GitHub stars (server repo); latest release `v24.10.13` (2026-04-01); actively developed and commercially maintained by KurrentDB (formerly Event Store Ltd); in production at hundreds of enterprises; the original reference implementation for event sourcing.
+**Maturity signals:** 5 775 GitHub stars (server repo); latest release `v26.0.2` (2026-03-13); actively developed and commercially maintained by KurrentDB (formerly Event Store Ltd); in production at hundreds of enterprises; the original reference implementation for event sourcing.
 
 **Ideology / architectural stance:** EventStoreDB is purpose-built for event sourcing: the storage layer exists solely to manage event streams, and every feature is optimized around that single concern. It provides server-side persistent subscriptions, catch-up subscriptions, projections engine, and a gRPC streaming API. It does not try to be a general-purpose database. The 2024–2025 rebrand to KurrentDB signals continued commercial investment.
 
@@ -1320,7 +1320,7 @@ Maps to feature:   #20 · GDPR crypto-shredding
 Current state:     §4 Feature 20 — Status ❌; event payloads stored as plaintext JSONB; no key registry, no payload encryption.
 Priority:          MUST
 Effort:            XL
-Depends on:        none
+Depends on:        G-05 API design (upcaster tombstone shape must be settled before G-04 encryption envelope is finalised)
 Blocks:            none
 Breaking change:   yes
 Impact surface:    core + event-storage-adapter-postgres + event-type-zod
@@ -1412,7 +1412,7 @@ Current state:     §4 Feature 11 — Status ⚠️ (version field is aggregate 
 Priority:          SHOULD
 Effort:            L
 Depends on:        none
-Blocks:            none
+Blocks:            G-04 (API design for tombstone shape must be settled before G-04 encryption envelope is finalised)
 Breaking change:   no
 Impact surface:    core + event-type-zod
 ```
@@ -2111,7 +2111,7 @@ The following table provides reproducibility metadata for each primary competito
 | Competitor | Repo URL | Docs URL | Last inspected | Version at inspection |
 |---|---|---|---|---|
 | Emmett | https://github.com/event-driven-io/emmett | https://event-driven.io/emmett/getting-started/ | 2026-04-16 | `0.42.0` (released 2026-02-10) |
-| EventStoreDB (KurrentDB) | https://github.com/EventStore/EventStore | https://developers.eventstore.com/server/v24.10/ | 2026-04-16 | `v26.0.2` (released 2026-03-13) |
+| EventStoreDB (KurrentDB) | https://github.com/EventStore/EventStore | https://developers.eventstore.com/ | 2026-04-16 | `v26.0.2` (released 2026-03-13) |
 | Marten | https://github.com/JasperFx/marten | https://martendb.io/documents/ | 2026-04-16 | `V8.30.1` (released 2026-04-16) |
 | Equinox | https://github.com/jet/equinox | https://github.com/jet/equinox#readme | 2026-04-16 | `4.1.0` (released 2026-02-04) |
 
