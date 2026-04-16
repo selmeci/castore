@@ -204,8 +204,316 @@ Testing utilities are framework-provided helpers that make it easy to write fast
 
 ## 3. Competitor matrix
 
-> TODO: see spec §3 for template.
-> TODO: reuse F-numbers from §2 verbatim.
+This section profiles four primary competitors and one DIY-Postgres control baseline, then consolidates all findings — including castore's §4 audit results — into a single 26×6 feature matrix.
+
+---
+
+### 3.1 Emmett
+
+**Stack:** TypeScript / Node.js 20+; storage options: PostgreSQL (primary), EventStoreDB, MongoDB, SQLite, in-memory; no published npm license as of inspection date — an [RFC](https://github.com/event-driven-io/emmett/pull/260) is open proposing AGPL v3 / SSPL with an open-core commercial model.
+
+**Maturity signals:** 473 GitHub stars; latest release `0.42.0` (2026-02-10); pre-1.0 versioning; stated production deployments by sponsor companies (productminds, Lightest Night); actively maintained — pushed 2026-04-16.
+
+**Ideology / architectural stance:** Emmett is explicitly opinionated but lightweight: composition over magic, framework-provided patterns rather than framework-imposed wiring. It focuses on making event sourcing accessible via clear patterns and BDD-style testing utilities. Multi-store support (Postgres, ESDB, MongoDB, SQLite) is a first-class goal. The author (Oskar Dudycz) is a recognized voice in the TS event-sourcing community.
+
+**Fit score for D1+N1+N4+N5+N6:** 3/5. Strong on storage fundamentals, testing, and schema evolution patterns. Weak on crypto-shredding (no native KMS integration), transactional outbox (Postgres store has an outbox-friendly design but no out-of-the-box relay worker), and the pre-1.0 license situation is a risk for a production financial system.
+
+**Dealbreakers:**
+- **No published open-source license.** The RFC outcome (AGPL v3 / SSPL) means adopting Emmett may restrict how derived works are distributed. For an internal-fork strategy this may be acceptable, but requires legal review.
+- **Pre-1.0 API instability.** `0.42.0` signals that breaking API changes are expected; adopting Emmett means tracking upstream changes rather than forking a stable baseline.
+- **No native crypto-shredding.** N1 (GDPR/PII delete) is not addressed; the application must build key-management wiring from scratch, the same gap as castore.
+- **EventBridge not supported.** The in-scope AWS delivery chain (EventBridge + S3) has no Emmett adapter; teams would need to build and maintain one.
+
+**26-feature coverage:**
+
+| Feature | Emmett |
+|---|---|
+| F1 — Append-only event log | ✅ |
+| F2 — Version-based OCC | ✅ |
+| F3 — Multi-aggregate transactional commit | ⚠️ |
+| F4 — Idempotent writes | ⚠️ |
+| F5 — Snapshots | ✅ |
+| F6 — Projection runner with checkpoints | ✅ |
+| F7 — Projection rebuild | ✅ |
+| F8 — Projection lag monitoring | ⚠️ |
+| F9 — Inline (sync) projections | ✅ |
+| F10 — External (async) projections | ✅ |
+| F11 — Explicit event type versioning | ⚠️ |
+| F12 — Upcaster pipeline | ⚠️ |
+| F13 — Event type retirement / rename | ❌ |
+| F14 — Tolerant deserialization | ⚠️ |
+| F15 — Transactional outbox | ⚠️ |
+| F16 — At-least-once + dedup | ⚠️ |
+| F17 — Message bus abstraction | ✅ |
+| F18 — Message queue abstraction | ⚠️ |
+| F19 — DLQ / poison-pill handling | ❌ |
+| F20 — GDPR crypto-shredding | ❌ |
+| F21 — Event encryption at rest | ❌ |
+| F22 — Multi-tenancy | ⚠️ |
+| F23 — Causation / correlation metadata | ✅ |
+| F24 — Replay tooling | ⚠️ |
+| F25 — Observability | ⚠️ |
+| F26 — Testing utilities | ✅ |
+
+*Notes:* F3 rated ⚠️ — Postgres store uses a single connection / transaction per command; explicit multi-stream atomic commits require manual transaction management. F4 rated ⚠️ — idempotency is a convention via metadata fields, not a first-class store API. F12 rated ⚠️ — schema evolution patterns are documented but the upcaster pipeline is convention/application-layer, not a framework pipeline. F15 rated ⚠️ — the Postgres store is designed with outbox-friendly patterns but no out-of-the-box relay worker. Confidence on F11/F12/F15 is medium — docs inspection only; confirm during per-gap brainstorming.
+
+*Docs inspected: 2026-04-16*
+
+---
+
+### 3.2 EventStoreDB (KurrentDB)
+
+**Stack:** C# / .NET (server); TS/JS client (`@eventstore/db-client`); dedicated server deployment (TCP/gRPC); storage is EventStoreDB-proprietary (append-only log files on disk); license: server is BSL / commercial (Community Edition for dev, Enterprise for production at scale); client is Apache 2.0.
+
+**Maturity signals:** 5 775 GitHub stars (server repo); latest release `v24.10.13` (2026-04-01); actively developed and commercially maintained by KurrentDB (formerly Event Store Ltd); in production at hundreds of enterprises; the original reference implementation for event sourcing.
+
+**Ideology / architectural stance:** EventStoreDB is purpose-built for event sourcing: the storage layer exists solely to manage event streams, and every feature is optimized around that single concern. It provides server-side persistent subscriptions, catch-up subscriptions, projections engine, and a gRPC streaming API. It does not try to be a general-purpose database. The 2024–2025 rebrand to KurrentDB signals continued commercial investment.
+
+**Fit score for D1+N1+N4+N5+N6:** 4/5. Feature-complete for the ES domain. The main penalty is operational burden (dedicated server) and the absence of native crypto-shredding for N1.
+
+**Dealbreakers:**
+- **Dedicated server — new ops category.** The D1 stack is Postgres-native; adding EventStoreDB introduces a second database server (patching, backups, HA configuration, monitoring). For a greenfield project with limited DevOps capacity this is a significant cost.
+- **Commercial license for production.** Community Edition is limited; production deployments at scale require an Enterprise license. Cost and vendor lock-in are real concerns.
+- **No native crypto-shredding.** N1 (GDPR/PII delete) is not solved by the store itself; workarounds require application-layer encryption with external KMS — same gap as all competitors.
+- **No EventBridge integration.** The delivery chain uses gRPC persistent subscriptions; bridging to AWS EventBridge requires a custom consumer→publisher relay.
+
+**26-feature coverage:**
+
+| Feature | ESDB |
+|---|---|
+| F1 — Append-only event log | ✅ |
+| F2 — Version-based OCC | ✅ |
+| F3 — Multi-aggregate transactional commit | ❌ |
+| F4 — Idempotent writes | ✅ |
+| F5 — Snapshots | ✅ |
+| F6 — Projection runner with checkpoints | ✅ |
+| F7 — Projection rebuild | ✅ |
+| F8 — Projection lag monitoring | ✅ |
+| F9 — Inline (sync) projections | ❌ |
+| F10 — External (async) projections | ✅ |
+| F11 — Explicit event type versioning | ✅ |
+| F12 — Upcaster pipeline | ⚠️ |
+| F13 — Event type retirement / rename | ⚠️ |
+| F14 — Tolerant deserialization | ⚠️ |
+| F15 — Transactional outbox | ❌ |
+| F16 — At-least-once + dedup | ✅ |
+| F17 — Message bus abstraction | ✅ |
+| F18 — Message queue abstraction | ✅ |
+| F19 — DLQ / poison-pill handling | ✅ |
+| F20 — GDPR crypto-shredding | ❌ |
+| F21 — Event encryption at rest | 🔶 |
+| F22 — Multi-tenancy | 🔶 |
+| F23 — Causation / correlation metadata | ✅ |
+| F24 — Replay tooling | ✅ |
+| F25 — Observability | ✅ |
+| F26 — Testing utilities | ✅ |
+
+*Notes:* F3 rated ❌ — EventStoreDB has no cross-stream atomic transactions; multi-stream writes are not atomic. F9 rated ❌ — ESDB is a separate process; writing to a relational read model in the same transaction as an event write is architecturally impossible. F12/F13 rated ⚠️ — schema evolution is supported via event metadata and naming convention; no native upcaster pipeline. F15 rated ❌ — the dual-write problem is not solved at the store level; requires application-layer outbox to bridge from ESDB to a downstream bus. F20 rated ❌ — no native GDPR key-per-subject shredding; recommended approach is application-layer encryption with external KMS. F21 rated 🔶 — ESDB server supports TLS in transit and disk encryption via OS; payload-level encryption requires application code. Confidence: medium — docs inspection only.
+
+*Docs inspected: 2026-04-16*
+
+---
+
+### 3.3 Marten
+
+**Stack:** C# / .NET 8+; PostgreSQL only (no other storage backends); MIT license; dual-function: document database + event store in the same library.
+
+**Maturity signals:** 3 361 GitHub stars; latest release `V8.30.1` (2026-04-16 — active releases same day as this inspection); commercially supported by JasperFx Software (paid support plans); widely used in .NET event-sourcing community; production deployments documented in public case studies.
+
+**Ideology / architectural stance:** Marten treats PostgreSQL as a first-class event store by mapping event streams directly to Postgres tables with JSONB payloads and a global sequence column (`seq_id`). Its async daemon (a pull-based catch-up projection runner with durable checkpoints) and inline projections are Postgres-native and deeply integrated with the Postgres transaction model. The library is deliberately .NET-only and does not seek multi-language support.
+
+**Fit score for D1+N1+N4+N5+N6:** 4/5 as a *design reference*; 0/5 for direct adoption (language lock-in). Marten is the closest analogue to the castore+Postgres target architecture. Its patterns — async daemon, projection checkpoints, inline projections within the same `IDocumentSession` transaction, GDPR `mt_soft_delete` pattern — are directly relevant to castore gap designs.
+
+**Dealbreakers:**
+- **.NET only — complete language lock-in.** A TypeScript shop cannot adopt Marten directly. This is the hard dealbreaker; Marten is in the set as a *pattern reference*, not an adoption candidate.
+- **Postgres-only.** If the architecture requires a non-Postgres backend (e.g. DynamoDB for certain services), Marten has no story there.
+- **No native EventBridge integration.** Marten publishes via its own bus abstraction (Wolverine / NServiceBus); bridging to AWS EventBridge is custom work.
+- **No native crypto-shredding.** GDPR compliance requires application-layer encryption with external KMS; Marten provides `mt_soft_delete` (logical deletion) but not cryptographic erasure of PII in immutable events.
+
+**26-feature coverage:**
+
+| Feature | Marten |
+|---|---|
+| F1 — Append-only event log | ✅ |
+| F2 — Version-based OCC | ✅ |
+| F3 — Multi-aggregate transactional commit | ✅ |
+| F4 — Idempotent writes | ✅ |
+| F5 — Snapshots | ✅ |
+| F6 — Projection runner with checkpoints | ✅ |
+| F7 — Projection rebuild | ✅ |
+| F8 — Projection lag monitoring | ✅ |
+| F9 — Inline (sync) projections | ✅ |
+| F10 — External (async) projections | ✅ |
+| F11 — Explicit event type versioning | ✅ |
+| F12 — Upcaster pipeline | ✅ |
+| F13 — Event type retirement / rename | 🔶 |
+| F14 — Tolerant deserialization | ✅ |
+| F15 — Transactional outbox | ✅ |
+| F16 — At-least-once + dedup | ✅ |
+| F17 — Message bus abstraction | 🔶 |
+| F18 — Message queue abstraction | 🔶 |
+| F19 — DLQ / poison-pill handling | 🔶 |
+| F20 — GDPR crypto-shredding | ⚠️ |
+| F21 — Event encryption at rest | ⚠️ |
+| F22 — Multi-tenancy | ✅ |
+| F23 — Causation / correlation metadata | ✅ |
+| F24 — Replay tooling | ✅ |
+| F25 — Observability | ✅ |
+| F26 — Testing utilities | ✅ |
+
+*Notes:* F3 rated ✅ — Marten uses `IDocumentSession` transactions that can span multiple streams atomically within a single Postgres transaction. F13 rated 🔶 — event type retirement is handled via the `IEventTransform` / `IEventMapper` convention; controlled but not a first-class built-in. F15 rated ✅ — Marten's async daemon uses a Postgres-native outbox pattern (writing events and daemon progress within the same Postgres transaction). F17/F18/F19 rated 🔶 — Marten integrates with Wolverine (JasperFx message bus) for bus/queue/DLQ; requires a separate Wolverine package. F20 rated ⚠️ — Marten does not provide a key-per-subject encryption API; GDPR erasure is approached via `mt_soft_delete` (marks events deleted but does not cryptographically erase PII). Confidence: medium — docs inspection only; no hands-on verification.
+
+*Docs inspected: 2026-04-16*
+
+---
+
+### 3.4 Equinox
+
+**Stack:** F# / .NET 6+; multi-storage: CosmosDB (primary), DynamoDB, EventStoreDB, MessageDB (Postgres), SqlStreamStore, MemoryStore; projections via companion library Propulsion; Apache 2.0 license.
+
+**Maturity signals:** 495 GitHub stars; latest release `4.1.0` (2026-02-04); production-proven at Jet.com since 2017 and through Walmart acquisition; small but highly experienced maintainer team; actively maintained.
+
+**Ideology / architectural stance:** Equinox is explicitly a library, not a framework — it provides stream-level event sourcing (append, load, OCC, snapshot/caching) and deliberately omits projections/subscriptions (delegated to Propulsion). Its defining architectural feature is multi-store support with a common decision-flow runner: you write domain logic once and swap the backing store. Snapshot strategies are first-class citizens, with store-specific optimizations (CosmosDB tip-with-unfolds, EventStoreDB rolling snapshots, MessageDB adjacent snapshots). Equinox is the clearest prior art for castore's multi-store vision.
+
+**Fit score for D1+N1+N4+N5+N6:** 2/5 for direct adoption (F# + .NET lock-in is a hard no for a TS shop); 5/5 as a design reference for snapshot-first, multi-store, type-safe event sourcing architecture.
+
+**Dealbreakers:**
+- **F# / .NET — complete language lock-in.** Same hard dealbreaker as Marten; cannot be adopted directly by a TypeScript team.
+- **Projections are an external library (Propulsion).** The combined Equinox + Propulsion + FsCodec stack is three libraries to learn, configure, and maintain; the surface area is broader than the simple stream-append use case suggests.
+- **No native crypto-shredding.** N1 not addressed; FsCodec's codec abstraction could support payload encryption but there is no out-of-the-box KMS integration.
+- **No EventBridge adapter.** The AWS delivery chain requires a custom Propulsion consumer-to-EventBridge bridge.
+
+**26-feature coverage:**
+
+| Feature | Equinox |
+|---|---|
+| F1 — Append-only event log | ✅ |
+| F2 — Version-based OCC | ✅ |
+| F3 — Multi-aggregate transactional commit | ⚠️ |
+| F4 — Idempotent writes | ⚠️ |
+| F5 — Snapshots | ✅ |
+| F6 — Projection runner with checkpoints | 🔶 |
+| F7 — Projection rebuild | 🔶 |
+| F8 — Projection lag monitoring | 🔶 |
+| F9 — Inline (sync) projections | ⚠️ |
+| F10 — External (async) projections | 🔶 |
+| F11 — Explicit event type versioning | ✅ |
+| F12 — Upcaster pipeline | ✅ |
+| F13 — Event type retirement / rename | ⚠️ |
+| F14 — Tolerant deserialization | ✅ |
+| F15 — Transactional outbox | ❌ |
+| F16 — At-least-once + dedup | ⚠️ |
+| F17 — Message bus abstraction | ❌ |
+| F18 — Message queue abstraction | ❌ |
+| F19 — DLQ / poison-pill handling | ❌ |
+| F20 — GDPR crypto-shredding | ❌ |
+| F21 — Event encryption at rest | ⚠️ |
+| F22 — Multi-tenancy | ⚠️ |
+| F23 — Causation / correlation metadata | ⚠️ |
+| F24 — Replay tooling | 🔶 |
+| F25 — Observability | 🔶 |
+| F26 — Testing utilities | ✅ |
+
+*Notes:* F3 rated ⚠️ — Equinox operates at per-stream level; multi-stream atomicity is not a core concept (the library is stream-scoped). F6/F7/F8/F10 rated 🔶 — all projection features require Propulsion, a separate companion library. F12 rated ✅ — FsCodec provides explicit `tryDecode` / `encode` functions with union-discriminated versioning, enabling upcaster chains. F15 rated ❌ — no outbox mechanism; the transactional boundary is per-stream; bridging to a bus is Propulsion's job and is not transactionally bound to the event write. F17/F18/F19 rated ❌ — Equinox has no bus/queue/DLQ abstractions; these are out of scope by design. F25 rated 🔶 — Equinox.Core emits Serilog-structured logs and OpenTelemetry is partially implemented (`Equinox.MessageDb`). Confidence: medium on F3/F4/F9/F13/F22/F23 — docs inspection only.
+
+*Docs inspected: 2026-04-16*
+
+---
+
+### 3.5 DIY Postgres baseline
+
+The DIY Postgres baseline represents what a competent senior developer could build in ≤3 working days using only the `pg` npm package, Postgres `SKIP LOCKED` for queue workers, and `LISTEN/NOTIFY` for lightweight pub-sub. Its purpose is to reveal the tier at which a framework begins earning its keep: features rated ✅ here are not strong arguments for adopting any framework, while features rated ⚠️ or ❌ identify where framework abstractions provide genuine leverage.
+
+The baseline explicitly excludes: type-level reducer contracts, schema migration tooling, adapter-swap capabilities, and any abstraction that requires architectural decisions a 3-day sprint cannot resolve. It answers the single question: "could we live without a framework for this feature?"
+
+**26-feature coverage:**
+
+| Feature | DIY Postgres |
+|---|---|
+| F1 — Append-only event log | ✅ |
+| F2 — Version-based OCC | ✅ |
+| F3 — Multi-aggregate transactional commit | ✅ |
+| F4 — Idempotent writes | ⚠️ |
+| F5 — Snapshots | ⚠️ |
+| F6 — Projection runner with checkpoints | ⚠️ |
+| F7 — Projection rebuild | ⚠️ |
+| F8 — Projection lag monitoring | ⚠️ |
+| F9 — Inline (sync) projections | ✅ |
+| F10 — External (async) projections | ✅ |
+| F11 — Explicit event type versioning | ⚠️ |
+| F12 — Upcaster pipeline | ❌ |
+| F13 — Event type retirement / rename | ❌ |
+| F14 — Tolerant deserialization | ⚠️ |
+| F15 — Transactional outbox | ⚠️ |
+| F16 — At-least-once + dedup | ⚠️ |
+| F17 — Message bus abstraction | ✅ |
+| F18 — Message queue abstraction | ✅ |
+| F19 — DLQ / poison-pill handling | ⚠️ |
+| F20 — GDPR crypto-shredding | ❌ |
+| F21 — Event encryption at rest | ⚠️ |
+| F22 — Multi-tenancy | ⚠️ |
+| F23 — Causation / correlation metadata | ⚠️ |
+| F24 — Replay tooling | ⚠️ |
+| F25 — Observability | ⚠️ |
+| F26 — Testing utilities | ❌ |
+
+*Notes:* F1/F2/F3 are straightforward SQL (UNIQUE constraint, BEGIN/COMMIT transaction) — a few hours of work. F9/F10/F17/F18 are similarly achievable with Postgres `LISTEN/NOTIFY` and a simple worker loop. F4–F8 are all ⚠️: achievable but each is a half-day to full-day design decision (idempotency table, snapshot table schema, catch-up loop with checkpoint table, lag query). F12/F13/F20 are ❌: these require framework-level pipeline abstractions or cryptographic infrastructure that cannot be built reliably in 3 days. F26 is ❌ because reusable given/when/then test helpers + an in-memory adapter that faithfully mirrors the real store semantics is a non-trivial framework concern.
+
+---
+
+### 3.6 Consolidated 26×6 feature matrix
+
+**Legend:**
+
+| Symbol | Meaning |
+|---|---|
+| ✅ | Built-in, first-class |
+| 🔶 | First-party extension / official lib |
+| ⚠️ | Partial — via convention / manual wiring / with caveats |
+| ❌ | Absent — would need to build |
+
+**How to read this matrix:** A ⚠️ cell is a *cost*, not a feature — it means the team must implement, maintain, and test the pattern themselves. A 🔶 cell means installing and learning an additional library (which adds a dependency, a version-management concern, and a possible license consideration). A ✅ in the DIY column means the feature is so simple that any framework claiming it as a differentiator is overstating its value. Read across a row to understand the effort differential; read down a column to understand a product's overall coverage posture.
+
+| Feature | Castore | Emmett | ESDB | Marten | Equinox | DIY |
+|---|---|---|---|---|---|---|
+| F1 — Append-only event log | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| F2 — Version-based OCC | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| F3 — Multi-aggregate transactional commit | ✅ | ⚠️ | ❌ | ✅ | ⚠️ | ✅ |
+| F4 — Idempotent writes | ❌ | ⚠️ | ✅ | ✅ | ⚠️ | ⚠️ |
+| F5 — Snapshots | ❌ | ✅ | ✅ | ✅ | ✅ | ⚠️ |
+| F6 — Projection runner with checkpoints | ❌ | ✅ | ✅ | ✅ | 🔶 | ⚠️ |
+| F7 — Projection rebuild | ❌ | ✅ | ✅ | ✅ | 🔶 | ⚠️ |
+| F8 — Projection lag monitoring | ❌ | ⚠️ | ✅ | ✅ | 🔶 | ⚠️ |
+| F9 — Inline (sync) projections | ⚠️ | ✅ | ❌ | ✅ | ⚠️ | ✅ |
+| F10 — External (async) projections | ✅ | ✅ | ✅ | ✅ | 🔶 | ✅ |
+| F11 — Explicit event type versioning | ⚠️ | ⚠️ | ✅ | ✅ | ✅ | ⚠️ |
+| F12 — Upcaster pipeline | ❌ | ⚠️ | ⚠️ | ✅ | ✅ | ❌ |
+| F13 — Event type retirement / rename | ❌ | ❌ | ⚠️ | 🔶 | ⚠️ | ❌ |
+| F14 — Tolerant deserialization | 🔶 | ⚠️ | ⚠️ | ✅ | ✅ | ⚠️ |
+| F15 — Transactional outbox | ❌ | ⚠️ | ❌ | ✅ | ❌ | ⚠️ |
+| F16 — At-least-once + dedup | ⚠️ | ⚠️ | ✅ | ✅ | ⚠️ | ⚠️ |
+| F17 — Message bus abstraction | ✅ | ✅ | ✅ | 🔶 | ❌ | ✅ |
+| F18 — Message queue abstraction | ✅ | ⚠️ | ✅ | 🔶 | ❌ | ✅ |
+| F19 — DLQ / poison-pill handling | ❌ | ❌ | ✅ | 🔶 | ❌ | ⚠️ |
+| F20 — GDPR crypto-shredding | ❌ | ❌ | ❌ | ⚠️ | ❌ | ❌ |
+| F21 — Event encryption at rest | ❌ | ❌ | 🔶 | ⚠️ | ⚠️ | ⚠️ |
+| F22 — Multi-tenancy | ❌ | ⚠️ | 🔶 | ✅ | ⚠️ | ⚠️ |
+| F23 — Causation / correlation metadata | ❌ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ |
+| F24 — Replay tooling | ⚠️ | ⚠️ | ✅ | ✅ | 🔶 | ⚠️ |
+| F25 — Observability | ❌ | ⚠️ | ✅ | ✅ | 🔶 | ⚠️ |
+| F26 — Testing utilities | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+
+---
+
+### 3.7 Competitors deliberately excluded
+
+The following competitors were evaluated during competitor selection and excluded from the primary analysis:
+
+- **Prooph** (PHP) — abandoned 2023; PHP ecosystem mismatch; no longer a meaningful reference.
+- **@nestjs/cqrs** — CQRS pattern only; no storage layer; not an event-sourcing framework.
+- **Axon** (Java) — different language, actor-model philosophy; comparison would mislead rather than inform.
+- **Akka Persistence** (Scala) — actor model; architectural analogy is too different to be actionable.
+- **MongoDB event stores** — community plugins only, no cohesive framework; comparison surface is too fragmented.
 
 ## 4. Castore current state — per feature
 
