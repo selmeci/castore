@@ -107,6 +107,18 @@ No other files are created or modified by this plan. If you find yourself wantin
 
 **Outcome:** §4 of the deliverable contains 26 per-feature audit entries plus the "What castore does exceptionally well" subsection. Every entry has at least one `file:line` reference or a documented reason the feature is absent. Category tallies are present. Upstream GitHub signals harvested.
 
+### Convention: "Absence evidence protocol" (referenced by Tasks 2.1–2.5)
+
+When a feature is expected to be ❌ or ⚠️ in castore, the bar for "confirmed absent" is:
+
+1. **Code grep** across `packages/**/src/**` using ≥2 related regexes (e.g. `snapshot|Snapshot` **and** `getLastVersion|aggregateState`).
+2. **Docs grep** across `docs/docs/**/*.md` and all `README*.md` in the repo.
+3. **Package-metadata grep** of the `description` field and `keywords` array in every in-scope `packages/*/package.json`.
+4. **Negative-evidence note** in the audit entry: `"Absence confirmed on <YYYY-MM-DD> via: <list of grep patterns and locations searched>. Confidence: high | medium | low."`
+5. **Confidence calibration:** if all three searches return zero and the feature is named in canonical ES references (Young/Dudycz/Vernon), confidence = **medium**, not high. Negative grep is weak evidence. Downgrade ❌ to ⚠️ if any doubt remains; flag as "confirm in per-gap brainstorming".
+
+Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns when this protocol applies.
+
 ### Task 2.1: Audit Category A — Storage & consistency (F1–F5)
 
 **Files:**
@@ -125,8 +137,8 @@ No other files are created or modified by this plan. If you find yourself wantin
 
 - [ ] **Step 4: Repeat steps 1–3 for F2 (OCC), F3 (multi-aggregate transactional commit via `pushEventGroup`), F4 (idempotent writes), F5 (snapshots).**
   - F3 evidence is in `eventStore.ts` `static pushEventGroup` — already partially discovered during brainstorming.
-  - F4: grep `idempotency|idempotent|dedup` — likely returns nothing. If absent, status is ❌ and Evidence is "no matches; absence confirmed by grep on <date>".
-  - F5: grep `snapshot|Snapshot` — likely returns nothing. Same protocol.
+  - F4: apply the **Absence evidence protocol** with regexes `idempoten|dedup|correlationToken` across code/docs/package metadata.
+  - F5: apply the **Absence evidence protocol** with regexes `snapshot|Snapshot|getLastVersion|cachedAggregate`.
 
 - [ ] **Step 5: Write the category tally line at the top of Category A.**
   - Example: `**Category A tally:** castore — 3/5 ✅ · 1/5 ⚠️ · 1/5 ❌ (F4 idempotency, F5 snapshots absent)`
@@ -162,7 +174,7 @@ No other files are created or modified by this plan. If you find yourself wantin
 
 - [ ] **Step 1: F11 "Explicit event versioning" — read `packages/core/src/event/eventDetail.ts` and `eventType.ts`. Does the event envelope include a `version` field distinct from aggregate version?**
 
-- [ ] **Step 2: F12 "Upcaster pipeline" — grep: `Grep pattern "upcast|upcaster|migrate.*event|transform.*event" in packages/`. Likely ❌.**
+- [ ] **Step 2: F12 "Upcaster pipeline" — apply the Absence evidence protocol with regexes `upcast|upcaster|migrate.*event|transform.*event|schemaVersion`.**
 
 - [ ] **Step 3: F13 "Event type retirement" — search docs for deprecation guidance: `Grep pattern "deprecat|retire|remove.*event" in docs/`**
 
@@ -195,11 +207,11 @@ No other files are created or modified by this plan. If you find yourself wantin
 **Files:**
 - Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§4 Category E)
 
-- [ ] **Step 1: F20 "Crypto-shredding" — grep: `Grep pattern "crypto.shred|per.subject.key|encryption.key|kms" in packages/`. Likely ❌.**
+- [ ] **Step 1: F20 "Crypto-shredding" — apply the Absence evidence protocol with regexes `crypto.?shred|per.?subject.?key|encryption.?key|\bkms\b|envelope.?encrypt`.**
 
-- [ ] **Step 2: F21 "Event encryption at rest" — likely ❌ in framework; may exist at Postgres level (TDE) but that's out of framework scope.**
+- [ ] **Step 2: F21 "Event encryption at rest" — apply the Absence evidence protocol with regexes `encrypt.*event|payload.*encrypt|pgcrypto`. TDE at Postgres level is out of framework scope; note as "infrastructure-layer concern".**
 
-- [ ] **Step 3: F22 "Multi-tenancy" — mark WON'T for this deliverable per spec §0 (not in profile).**
+- [ ] **Step 3: F22 "Multi-tenancy" — still write a full §4 audit entry (Status likely ❌, evidence via regex `tenant|multiTenant|tenantId`). The WON'T classification happens later in §5, not in §4. The audit must cover all 26 features without exception.**
 
 - [ ] **Step 4: F23 "Causation / correlation metadata" — read `eventDetail.ts`. Look for `causationId`, `correlationId`, or a generic `metadata` field.**
 
@@ -215,6 +227,10 @@ No other files are created or modified by this plan. If you find yourself wantin
 
 **Files:**
 - Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§8 Appendix — upstream notes)
+
+- [ ] **Step 0: Verify `gh` is authenticated.**
+  - Run: `gh auth status`
+  - Expected: `Logged in to github.com`. If not: run `gh auth login` (requires user interaction) OR fall back to browser-based GitHub search — open `https://github.com/castore-dev/castore/pulls?q=is%3Apr+is%3Aclosed` and `https://github.com/castore-dev/castore/issues?q=is%3Aissue` and copy titles manually. Note the fallback used in the deliverable's §8.1 so reproducibility is transparent.
 
 - [ ] **Step 1: Pull closed PRs from upstream.**
   - Run: `gh pr list --repo castore-dev/castore --state closed --limit 60 --json number,title,state,labels,url,closedAt`
@@ -379,7 +395,13 @@ No other files are created or modified by this plan. If you find yourself wantin
 **Files:**
 - Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§5 body)
 
-- [ ] **Step 1: Write G-01 "Transactional outbox" (expected MUST, N4).**
+- [ ] **Step 0: Reconcile the pre-assigned gap IDs below against actual §4 audit findings BEFORE writing any entries.**
+  - The IDs/priorities below (G-01 outbox MUST, G-02 snapshots MUST, etc.) are brainstorming hypotheses, not audit outcomes. Spec §6 risk-register protocol applies here too: hypotheses must be re-verified.
+  - If §4 revealed that a feature is *partially* present (e.g. snapshots have a one-off helper in `lib-dam`, or causation metadata is already on the envelope), renumber or re-prioritize that gap and log the change in the §5 preamble under "Priority revisions from audit".
+  - If a whole gap dissolves (feature turns out to be ✅), drop it and renumber downstream G-IDs contiguously.
+  - Only after this reconciliation step proceed to writing the entries.
+
+- [ ] **Step 1: Write G-01 "Transactional outbox" (expected MUST, N4 — verify assumption survives Step 0).**
   - Use spec §5 template verbatim. Design sketch: Postgres `outbox` table in same tx; relay worker with advisory lock; optional pointer-in-outbox for S3-offloaded large payloads (spec §6 R-04).
   - Alternatives considered: Debezium CDC, logical replication, userland convention. List pros/cons.
   - Effort: L. Justify.
@@ -437,11 +459,11 @@ No other files are created or modified by this plan. If you find yourself wantin
 
 - [ ] **Step 2: Enumerate edges on paper first. Expected edges include: G-08 → G-07 (rebuild needs runner), G-04 → (potentially) G-05 (shredding tombstones may need to be visible through upcasting), G-10 → G-07 (DLQ is useful only with an async consumer).**
 
-- [ ] **Step 3: Render as Mermaid in the deliverable.**
+- [ ] **Step 3: Render as Mermaid in the deliverable.** The snippet below is a **stylistic example**, not the finished DAG. Do not paste it literally — build the real DAG from the edges you enumerated in Step 2.
   ```mermaid
   graph TD
     G07[G-07 Projection runner] --> G08[G-08 Rebuild tooling]
-    ...
+    %% ... add one edge per dependency from Step 2 ...
   ```
 
 - [ ] **Step 4: Sanity-check: no cycles. Walk the DAG mentally; if any node has a path back to itself, fix.**
@@ -499,7 +521,7 @@ No other files are created or modified by this plan. If you find yourself wantin
 ### Task 5.4: Verify R-08..R-10 (governance/security)
 
 - [ ] **Step 1: R-08 crypto-shredding key lifecycle — confirm framework provides no KMS integration (cross-ref to F20 audit).**
-- [ ] **Step 2: R-09 outbox relay SPOF — note: N/A until G-01 implemented; keep as a risk *in the Phase 1 roadmap*, not a castore risk.**
+- [ ] **Step 2: R-09 outbox relay SPOF — DROP from §7 risk register.** R-09 is a design risk of a *hypothetical future* G-01 implementation, not a current property of the castore codebase. Relocate its substance to the G-01 gap entry in §5 under "Design considerations / open risks". In §7 add a one-line note in "Dropped during verification": `R-09 — reclassified as a G-01 design risk; see §5 G-01.`
 - [ ] **Step 3: R-10 causation/correlation not mandatory — cross-ref to F23 audit.**
 - [ ] **Step 4: Commit.**
 
@@ -551,6 +573,10 @@ No other files are created or modified by this plan. If you find yourself wantin
 - [ ] **Step 2: Commit.**
 
 ### Task 6.4: Conditional calendar table
+
+- [ ] **Step 0: Check OQ-1 resolution.**
+  - If OQ-1 (FTE capacity) has been resolved by the user since spec sign-off: **replace** the conditional 1/1.5/2 table with a single projection using the actual FTE number, and drop the "conditional" framing from the section prose. Keep the parallelization caveat paragraph either way.
+  - If OQ-1 is still open: proceed with Steps 1–4 as written.
 
 - [ ] **Step 1: Sum Phase 1 effort in person-days (from Effort rubric: S=2, M=6, L=16, XL=30 — use midpoints).**
 - [ ] **Step 2: Divide by 1 FTE, 1.5 FTE, 2 FTE capacity, assuming 4 effective days/week (accounting for meetings, context-switch, code review of self by cross-checking).**
@@ -641,6 +667,9 @@ No other files are created or modified by this plan. If you find yourself wantin
 - [ ] **Step 1: Surface the deliverable to the user by path: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`.**
 - [ ] **Step 2: Highlight: §6 opener (go/no-go), §5 gap catalogue (entry points for next brainstorming cycles), §7 risk register (what needs ongoing management).**
 - [ ] **Step 3: Remind user that this deliverable is a **decision input**, not a green light. Next step = user decides: proceed with fork (triggers per-MUST-gap brainstorming cycles) or pivot.**
+- [ ] **Step 4: Ask for an explicit go/no-go decision — do not close the session without one.**
+  - Present 3 options to the user verbatim: **(a)** Go — proceed with castore fork; open first brainstorming cycle for the top-priority MUST gap (per §5 priority order). **(b)** No-go — pivot to an alternative (likely Emmett or DIY Postgres based on §3); close the castore worktree. **(c)** Defer — specific questions returned to (e.g. "re-open OQ-5 spike", "escalate to stakeholders X/Y"), session paused until resolved.
+  - Wait for an explicit choice. Log it in the deliverable itself as a final line: `**Decision (<date>):** <a|b|c> — <one-line rationale from user>`. This line is the deliverable's terminal state and the bridge to whatever comes next.
 
 ---
 
