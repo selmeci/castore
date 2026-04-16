@@ -2198,3 +2198,27 @@ Formal validation that this deliverable satisfies every criterion in spec §7. P
 | 6 | The risk register has Likelihood/Impact/Mitigation for every kept risk. | ✅ | §7 risk register table has columns Likelihood / Impact / Mitigation for each of R-01, R-02, R-03, R-04, R-05, R-06, R-08, R-10, R-11, R-12 (10 kept risks). R-07 and R-09 are documented as dropped with rationale. |
 | 7 | The opener of §6 contains a clear go/no-go recommendation with one-sentence rationale. | ✅ | §6.0 opens with "**Go — conditional.**" followed by a single paragraph rationale naming the four MUST gaps, the conditional criteria, and the no-go threshold. |
 | 8 | Glossary covers every acronym; every code reference cites `file:line`; every forward reference has a back-link. | ✅ | §8.3 defines 52 terms covering every semantic acronym found by `grep -oE '\b[A-Z]{2,}\b' \| sort -u` (SQL keywords in code blocks excluded). `grep -oE "\.ts:[0-9]+"` returns 72 file:line references across §4 and §5. Forward references to §3, §4, §5, §6, §7, §8 all resolve to sections present in this document. |
+
+---
+
+## Decision
+
+This deliverable is a decision input, not a green light. Three sections are the critical entry points before deciding:
+
+- **§6.0 — Go/no-go recommendation:** the "Go — conditional" verdict with its four MUST gaps, the conditional criteria, and the explicit no-go threshold. This is the one-page answer to "should we fork castore?"
+- **§5 — Gap detail catalogue:** ten gap entries (G-01 through G-10) with design sketches, effort estimates, and dependency relationships. Each MUST gap is a discrete brainstorming-cycle input; the catalogue is the bridge from this analysis to implementation planning.
+- **§7 — Risk register:** ten live risks (R-01 through R-12, minus two dropped) with likelihood, impact, and mitigation. R-08 (KMS key loss) and R-11 (single-maintainer knowledge risk) are High-impact items that require active owner assignment before Phase 1 begins.
+
+This document does not authorise work to start. It establishes what work is needed, at what cost, and at what risk. The go/no-go decision must be made explicitly before any implementation cycle is opened.
+
+**Three options:**
+
+**(a) Go** — proceed with castore fork; open the first brainstorming cycle for the top-priority MUST gap (G-01 — Transactional outbox, per §5 priority order and §6.2 Phase 1 sequencing).
+
+**(b) No-go** — pivot to an alternative; the two viable paths per §3 are: Emmett (TypeScript, closest peer, but pre-1.0 and license-pending) or DIY Postgres (maximum control, maximum build cost). Close the castore worktree.
+
+**(c) Defer** — specific unresolved questions are returned (e.g. "re-open OQ-5 spike before committing to G-04", "escalate to stakeholders", "wait for Emmett 1.0 license decision"); session paused until resolved.
+
+---
+
+**Decision (\_\_\_\_\_\_\_\_\_):** \_\_\_\_\_ — \_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_\_.
