@@ -162,7 +162,7 @@ Fixed fields:
 
 ## 4. Castore current state — per-feature audit
 
-Each of the 26 features gets its own sub-section. At the top of each category (A–E) a one-line tally: `castore: 3/5 ✅ | 1/5 🔶 | 1/5 ❌`.
+Each of the 26 features gets its own sub-section. At the top of each category (A–E) a one-line tally. Example (numbers are illustrative, not findings): `castore: 3/5 ✅ | 1/5 🔶 | 1/5 ❌`.
 
 ### Per-feature entry template
 
@@ -219,7 +219,8 @@ Effort:            S | M | L | XL     (rubric below)
 Depends on:        [G-XX, G-YY] or none
 Blocks:            [G-ZZ] or none
 Breaking change:   yes / no
-Impact surface:    packages affected (e.g. core, postgres-adapter)
+Impact surface:    subset of the 8 in-scope packages listed in §0 (e.g. "core + postgres-adapter"); free-form text disallowed
+
 
 #### Problem statement
 <3–6 sentences — a concrete finance-domain scenario where absence bites us.>
@@ -269,6 +270,8 @@ Estimates are **deliberately pessimistic** — they include tests, docs, review,
 ### Dependency DAG
 
 At the end of §5 a single Mermaid graph shows gap-to-gap dependencies. Example edges: "Projection rebuild" depends on "Projection runner with checkpoints"; "Crypto-shredding" depends on "Event encryption at rest"; "Replay tooling CLI" depends on "Projection runner" + "Snapshots". This DAG is the direct input to §6 (roadmap = topological sort × priority).
+
+**Definition of "dependency" (DAG edge criterion):** `G-A → G-B` means *G-A cannot be designed or shipped until G-B's public API or data model has been decided*. Thematic similarity, shared concerns, or "nice to do together" are **not** dependencies — they do not get DAG edges. When in doubt, no edge.
 
 ### Anti-scope for gap entries (explicit)
 
@@ -321,6 +324,8 @@ Phase 3 — COULD-haves (optional, demand-driven)
 | Gap ID | Effort | Priority | Depends on | Owner | ETA |
 |---|---|---|---|---|---|
 
+`Owner` and `ETA` columns are **TBD until OQ-1 (FTE) and OQ-2 (deadline) are resolved** (see §9). Until then, fill them with `TBD`. Do not drop the columns — their presence is a standing reminder that capacity/deadline decisions are required to finalize the roadmap.
+
 ### Dependency DAG
 
 The same Mermaid graph from §5 appears here annotated with phase boundaries — visualizes critical path vs. parallelizable work.
@@ -347,6 +352,9 @@ The document will include:
 |---|---|---|---|---|---|---|
 
 ### Risks to be captured (preview — final wording set during writing)
+
+**Note on verification:** the preview entries R-01…R-12 below are *hypotheses* formulated during brainstorming from partial code inspection. Every risk must be re-verified against the current code during the audit in §4. If a claim is invalidated (e.g. `EventStore` turns out to be trivially extendable via composition with no practical downside), the risk is rewritten or dropped with a one-line note of what changed. Do not copy the preview verbatim into the final deliverable.
+
 
 **Technical / architectural**
 
@@ -391,7 +399,7 @@ The gap-analysis document is complete when:
 5. The dependency DAG has no cycles and is rendered as Mermaid.
 6. The risk register has all R-01…R-12 (or updated set) populated with Likelihood/Impact/Mitigation.
 7. The opener of §6 contains a clear go/no-go recommendation with one-sentence rationale.
-8. The document is self-contained — a reader with no prior castore knowledge can follow it end-to-end.
+8. The document is self-contained — measured by: every ES acronym (ES, OCC, DLQ, PII, KMS, CDC, FTE, etc.) appears in the appendix glossary; every code reference cites `file:line`; every forward reference has a matching back-link (e.g. "see §6.2"); a random skim on any page reveals which of the 5 feature categories is being discussed.
 
 ---
 
@@ -407,8 +415,13 @@ The gap-analysis document is complete when:
 
 ## 9. Open questions to resolve before execution
 
+**Blocking execution (must be answered before the analysis starts):**
+
 - **OQ-1** FTE capacity for the analysis work itself (1 person full-time? part-time?) — affects research depth and calendar estimate for the analysis, not the eventual implementation.
-- **OQ-2** Hard deadline for the go/no-go decision, if any.
-- **OQ-3** Are there additional stakeholders (CTO, compliance, SRE) who should be named as reviewers of the final deliverable?
-- **OQ-4** Should competitor evaluation include hands-on POC (e.g. 1-day spike per competitor) or is documentation review sufficient?
+- **OQ-2** Hard deadline for the go/no-go decision, if any. If none, Phase 3 of the roadmap is **still written** as part of the initial deliverable — its presence is how we signal COULD-haves are scoped but deferred.
 - **OQ-5** Do we want a spike/POC phase ("Phase −1") for the highest-risk gap (likely crypto-shredding) before investing in the fork & upgrade?
+
+**Non-blocking — defaults applied unless overridden:**
+
+- **OQ-3** Additional stakeholder reviewers (CTO, compliance, SRE)? **Default:** Roman only, unless stakeholders self-nominate after the deliverable is shared.
+- **OQ-4** Hands-on POC per competitor (1-day spike) vs. documentation-only review? **Default:** documentation-only review; hands-on POC is triggered only if a specific risk-register entry requires it (e.g. "can Emmett actually do crypto-shredding in a Postgres-compatible way?" would justify a spike).
