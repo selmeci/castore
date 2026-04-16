@@ -263,7 +263,7 @@ This section profiles four primary competitors and one DIY-Postgres control base
 
 ### 3.2 EventStoreDB (KurrentDB)
 
-**Stack:** C# / .NET (server); TS/JS client (`@eventstore/db-client`); dedicated server deployment (TCP/gRPC); storage is EventStoreDB-proprietary (append-only log files on disk); license: server is BSL / commercial (Community Edition for dev, Enterprise for production at scale); client is Apache 2.0.
+**Stack:** C# / .NET (server); TS/JS client (`@eventstore/db-client`, 175 stars); dedicated server deployment (TCP/gRPC); storage is EventStoreDB-proprietary (append-only log files on disk); license: server is BSL / commercial (Community Edition for dev, Enterprise for production at scale); client is Apache 2.0.
 
 **Maturity signals:** 5 775 GitHub stars (server repo); latest release `v24.10.13` (2026-04-01); actively developed and commercially maintained by KurrentDB (formerly Event Store Ltd); in production at hundreds of enterprises; the original reference implementation for event sourcing.
 
