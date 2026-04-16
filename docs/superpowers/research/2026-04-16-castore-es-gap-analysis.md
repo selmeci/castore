@@ -316,7 +316,7 @@ This section profiles four primary competitors and one DIY-Postgres control base
 
 ### 3.3 Marten
 
-**Stack:** C# / .NET 8+; PostgreSQL only (no other storage backends); MIT license; dual-function: document database + event store in the same library.
+**Stack:** C# / .NET 8+; PostgreSQL only (no other storage backends); MIT license; dual-function: document database + event store in the same library. Companion bus library: Wolverine (JasperFx).
 
 **Maturity signals:** 3 361 GitHub stars; latest release `V8.30.1` (2026-04-16 — active releases same day as this inspection); commercially supported by JasperFx Software (paid support plans); widely used in .NET event-sourcing community; production deployments documented in public case studies.
 
