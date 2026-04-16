@@ -369,7 +369,7 @@ This section profiles four primary competitors and one DIY-Postgres control base
 
 ### 3.4 Equinox
 
-**Stack:** F# / .NET 6+; multi-storage: CosmosDB (primary), DynamoDB, EventStoreDB, MessageDB (Postgres), SqlStreamStore, MemoryStore; projections via companion library Propulsion; Apache 2.0 license.
+**Stack:** F# / .NET 6+; multi-storage: CosmosDB (primary), DynamoDB, EventStoreDB, MessageDB (Postgres), SqlStreamStore, MemoryStore; projections and subscriptions via companion library Propulsion (`jet/propulsion`); codec abstraction via FsCodec (`jet/FsCodec`); Apache 2.0 license.
 
 **Maturity signals:** 495 GitHub stars; latest release `4.1.0` (2026-02-04); production-proven at Jet.com since 2017 and through Walmart acquisition; small but highly experienced maintainer team; actively maintained.
 
