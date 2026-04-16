@@ -1890,7 +1890,168 @@ graph TD
 
 ## 6. Prioritized roadmap
 
-> TODO: see spec §6 for template.
+### 6.0 Recommendation
+
+**Go — conditional.** Castore is a sound foundation for a D1 financial product, but it cannot be trusted for production use today. Four structural gaps (G-01 through G-04) are regulatory or correctness blockers that must be closed before any EU customer data is written to the store. Critically, G-04 (GDPR crypto-shredding) carries an XL effort estimate and a dependency on G-05 (upcaster pipeline), making Phase 1 effectively 120 person-days of work before accounting for the G-05 sequencing constraint. The go decision is conditional on (a) completing Phase 1 before any PII-bearing event reaches production, and (b) resolving OQ-5 (crypto-shredding spike / POC) before committing to the G-04 implementation plan. Castore's strengths — first-class `pushEventGroup` for double-entry bookkeeping, typed OCC baked into every adapter contract, and the in-memory adapter's deterministic test support — make the investment worthwhile if Phase 1 is resourced correctly. The no-go threshold would be reached if the G-04 spike reveals that adapter-level envelope encryption is architecturally incompatible with the EventBridge message path in a way that requires core surgery beyond the current XL estimate.
+
+**MoSCoW counts:** 4 MUST · 3 SHOULD · 3 COULD · 8 WON'T
+
+**Phase 1 total effort (midpoints):** G-01 (L=16 pd) + G-02 (L=16 pd) + G-03 (M=6 pd) + G-04 (XL=30 pd) = **68 person-days**. Note: because the DAG edge G-05 → G-04 requires G-05's API to be settled before G-04 implementation begins, the practical Phase 1 effort is 68 pd for Phase 1 gaps plus ~16 pd for G-05 design-only work upfront, bringing the effective gated effort to ~84 pd before Phase 2 resumes with G-05 fully in scope.
+
+**Top risks:**
+- **R-08 (High impact)** — No crypto-shredding key registry exists. Every EU customer onboarded before G-04 ships is a latent GDPR liability. Losing the KMS master key is irreversible. This is the single risk most likely to derail the project if unaddressed.
+- **R-11 (High impact)** — Single-maintainer knowledge risk. One person holds both ES domain knowledge and castore internals. Their departure before a second team member has shipped a MUST gap end-to-end would re-abandon the fork with no path back.
+- **R-03 (High impact, low likelihood)** — `pushEventGroup` dispatches through the first event's adapter only. Multi-region or multi-store atomic commits are architecturally blocked. Low likelihood now (single-region greenfield), but a structural trap if active-active eventually becomes a requirement.
+
+---
+
+### 6.1 MoSCoW counts
+
+Walking §5 gap entries in order:
+
+| Gap ID | Priority | Effort |
+|--------|----------|--------|
+| G-01 — Transactional outbox | MUST | L |
+| G-02 — Snapshots | MUST | L |
+| G-03 — Idempotent writes | MUST | M |
+| G-04 — GDPR crypto-shredding | MUST | XL |
+| G-05 — Upcaster pipeline | SHOULD | L |
+| G-06 — Causation / correlation metadata | SHOULD | M |
+| G-07 — Projection runner with checkpoints | SHOULD | XL |
+| G-08 — Projection rebuild tooling | COULD | M |
+| G-09 — Observability (OpenTelemetry) | COULD | M |
+| G-10 — DLQ convention | COULD | S |
+
+**Summary:** 4 MUST · 3 SHOULD · 3 COULD
+
+**WON'T line-items (from §5.6):** F8 (projection lag monitoring), F9 (inline sync projections), F13 (event type retirement / rename), F14 (tolerant deserialization), F16 (at-least-once + dedup), F21 (event encryption at rest), F22 (multi-tenancy), F24 (replay tooling standalone) — **8 WON'T**
+
+**Priority revisions logged:**
+- G-06 (causation/correlation) was a hypothesised MUST pre-audit; §4 F23 confirmed a generic `metadata` field provides a convention workaround. Downgraded to SHOULD. No further revisions warranted — all other priorities match pre-audit hypotheses.
+
+---
+
+### 6.2 Phases
+
+**Phase 0 — Fork cleanup & health audit** (deferred — separate brainstorming cycles; Phase 0 gaps do not appear in §5)
+
+Phase 0 is a prerequisite sub-project that must complete before Phase 1 implementation work begins. It is not this document's scope to plan Phase 0 in detail; a separate brainstorming cycle will produce that plan. For reference, Phase 0 covers:
+
+- Fork the repository under an internal scope; remove all 11 out-of-scope packages (dynamodb, http, redux, sqs, sqs-s3, in-memory message bus / queue, json-schema command and event-type, lib-dam, lib-react-visualizer).
+- Reset CI pipeline and package.json workspace references for the 8 in-scope packages.
+- Verify Node 22 compatibility and resolve any remaining CJS / ESM interop issues.
+- Dependency upgrade sweep: pin `postgres` to `^3`, audit transitive deps, resolve critical CVEs.
+- Confirm build and test green in CI with no critical CVEs.
+
+Exit criterion: `pnpm build && pnpm test` green for all 8 in-scope packages in CI; no critical CVEs in `pnpm audit`.
+
+---
+
+**Phase 1 — MUST-haves** (all 4 MUST gaps from §5)
+
+All four gaps must be shipped before any PII-bearing event is written to the production database. G-04 (crypto-shredding) carries an XL estimate and a DAG dependency on G-05 (upcaster pipeline, Phase 2 scope). The practical sequencing is: resolve G-05 API design (not full implementation) early in Phase 1 to unblock G-04 implementation. G-01, G-02, and G-03 are fully independent and can proceed in parallel with the G-05 design work.
+
+Exit criterion: each MUST gap has its acceptance criteria met; an end-to-end integration test (Postgres + EventBridge) is green; production-readiness sign-off complete.
+
+---
+
+**Phase 2 — SHOULD-haves** (G-05, G-06, G-07)
+
+G-05 (upcaster pipeline) — the API design was done during Phase 1 as a G-04 prerequisite; Phase 2 completes the full implementation and testing. G-06 (causation/correlation) is independent and can proceed in parallel. G-07 (projection runner) is the largest item in Phase 2 (XL) and should be started early; G-08 and G-10 are blocked on it.
+
+Exit criterion: documented migration playbook for event-schema evolution; at least one event type has a tested upcaster; causation/correlation fields are enforced at the type level; projection runner is running in staging with checkpoints verified.
+
+---
+
+**Phase 3 — COULD-haves** (G-08, G-09, G-10) — demand-driven, optional
+
+G-08 (projection rebuild tooling) and G-10 (DLQ convention) both depend on G-07 completing in Phase 2. G-09 (observability) is independent. Phase 3 items are implemented only if production experience confirms the need; none are required for initial production go-live.
+
+Rule: implement a Phase 3 item only if a concrete production incident or operational friction justifies the effort. Do not implement speculatively.
+
+---
+
+### 6.3 Per-phase tables
+
+#### Phase 1 — MUST-haves
+
+| Gap ID | Effort | Priority | Depends on | Owner | ETA |
+|--------|--------|----------|------------|-------|-----|
+| G-01 — Transactional outbox | L | MUST | none | TBD | TBD |
+| G-02 — Snapshots | L | MUST | none | TBD | TBD |
+| G-03 — Idempotent writes | M | MUST | none | TBD | TBD |
+| G-04 — GDPR crypto-shredding | XL | MUST | G-05 API design | TBD | TBD |
+
+_Note: G-04 has a DAG dependency on G-05 (SHOULD). G-05 full implementation is Phase 2, but its public API must be settled before G-04 design is finalised. Account for G-05 API-design work (~2–4 days) at the start of Phase 1._
+
+#### Phase 2 — SHOULD-haves
+
+| Gap ID | Effort | Priority | Depends on | Owner | ETA |
+|--------|--------|----------|------------|-------|-----|
+| G-05 — Upcaster pipeline | L | SHOULD | none (API design done in P1) | TBD | TBD |
+| G-06 — Causation / correlation metadata | M | SHOULD | none | TBD | TBD |
+| G-07 — Projection runner with checkpoints | XL | SHOULD | none | TBD | TBD |
+
+#### Phase 3 — COULD-haves (demand-driven)
+
+| Gap ID | Effort | Priority | Depends on | Owner | ETA |
+|--------|--------|----------|------------|-------|-----|
+| G-08 — Projection rebuild tooling | M | COULD | G-07 | TBD | TBD |
+| G-09 — Observability (OpenTelemetry) | M | COULD | none | TBD | TBD |
+| G-10 — DLQ convention | S | COULD | G-07 | TBD | TBD |
+
+Owner and ETA columns are `TBD` throughout pending resolution of OQ-1 (FTE capacity) and OQ-2 (hard deadline). Their presence here is a standing reminder that capacity and deadline decisions are required before this roadmap becomes a delivery commitment.
+
+---
+
+### 6.4 Conditional calendar
+
+**Effort midpoints used:** S = 2 pd, M = 6 pd, L = 16 pd, XL = 30 pd. Effective working rate: 4 days / FTE / week.
+
+**Phase 1 sum:** G-01 (16) + G-02 (16) + G-03 (6) + G-04 (30) = **68 person-days**
+
+**Phase 2 sum:** G-05 (16) + G-06 (6) + G-07 (30) = **52 person-days**
+
+**Phase 1 + Phase 2 combined:** 120 person-days (serial total; parallelization caps actual calendar — see note below)
+
+| FTE | Phase 1 calendar | Phase 1+2 calendar |
+|-----|------------------|--------------------|
+| 1 FTE | ~17 weeks | ~30 weeks |
+| 1.5 FTE | ~11 weeks | ~20 weeks |
+| 2 FTE | ~12 weeks (DAG-limited) | ~13 weeks (DAG-limited) |
+
+**Parallelization caveat — DAG-based analysis:**
+
+The dependency DAG from §5.7 has three edges: G-07 → G-08, G-07 → G-10, and G-05 → G-04. The G-05 → G-04 edge is the critical-path constraint for Phase 1: G-04 cannot be fully designed until G-05's API shape is settled, which means the Phase 1 critical path is approximately G-05 API design (~3 pd) + G-04 (30 pd) = ~33 pd, not the naive 30 pd. At 2 FTE, a second engineer can work on G-01 (16 pd), G-02 (16 pd), and G-03 (6 pd) in parallel while the first engineer clocks the G-05-API + G-04 critical path. The 2-FTE Phase 1 calendar is therefore capped at ceil(33 pd / 4 days/week) ≈ 9 weeks for the critical path alone — however adding review cycles, integration, and the Phase 0 overlap buffer brings the realistic estimate to ~12 weeks regardless of FTE parallelism.
+
+For Phase 1+2 at 2 FTE: after Phase 1 completes, G-05 full implementation (16 pd) and G-07 (30 pd) can run in parallel (independent in the DAG). G-06 (6 pd) can also run concurrently. The 2-FTE Phase 1+2 critical path is therefore Phase 1 (~12 weeks) + max(G-07, G-05 + G-06) / 2 = Phase 1 + max(30, 22) pd / (2 × 4) ≈ Phase 1 + 4 weeks ≈ ~13 weeks total.
+
+At 1.5 FTE or higher, the serial speedup begins to flatten: the DAG forces a single critical path through G-05 → G-04 and then G-07, meaning beyond ~2 FTE there is no further calendar compression without restructuring the implementation order.
+
+This analysis assumes no integration freeze, no review bottlenecks, and that Phase 0 (fork cleanup) completes before Phase 1 begins. A post-Phase-0 start date is the right anchor for any commitment calendar; that date is TBD pending OQ-1 resolution.
+
+---
+
+### 6.5 Checkpoint decision gate
+
+After Phase 1 completes — meaning all four MUST gaps (G-01 through G-04) have met their acceptance criteria and the end-to-end integration test is green — the team must hold a stop-the-line review before committing resources to Phase 2. This gate exists because Phase 1 is the first time castore internals are changed under production-quality constraints; it will surface architectural surprises that the gap analysis could not anticipate from static code review alone.
+
+The review should be framed around a single question: **does the castore hypothesis still hold?** Specifically:
+
+**Inputs to the review:**
+- Phase 1 completion evidence: all four acceptance criteria checklists signed off; integration test output.
+- G-04 (crypto-shredding) implementation findings: was the adapter-level envelope encryption approach viable as sketched, or did it require core surgery? How did KMS latency affect command-handler p99? Were any edge cases in the `{ shredded: true }` tombstone shape discovered that change the G-05 API design assumptions?
+- G-01 (outbox relay) operational findings: does the `SKIP LOCKED` advisory-lock pattern hold under the target transaction rate? What is the measured relay latency at realistic event volumes?
+- G-02 (snapshots) operational findings: does the optional-method pattern in the adapter contract interact cleanly with the existing `$Contravariant` type system, or did it require workarounds that should be addressed before Phase 2 adds more generics?
+- Architectural surprises log: any unexpected constraints discovered during Phase 1 that are not yet captured in the risk register.
+- New risks: any R-NN items discovered during Phase 1 implementation that would affect Phase 2 scope or the go/no-go confidence.
+
+**Outcome options:**
+1. **Proceed to Phase 2** — hypothesis confirmed; SHOULD gaps are worth the investment; team capacity is available.
+2. **Pause and revise** — Phase 1 findings change the scope or priority of one or more SHOULD gaps; update §5 gap entries and §6 Phase 2 table before resuming.
+3. **Pivot** — Phase 1 revealed a fundamental architectural constraint (e.g. the crypto-shredding approach requires changes to the core generic system that make castore unacceptably brittle) that invalidates the castore hypothesis for the D1 profile. In this case, the deliverable produced during the pivot decision must include a comparative evaluation of Emmett (see §3 competitor profile) as the most viable alternative.
+
+The checkpoint gate is not optional. Skipping it and proceeding directly from Phase 1 to Phase 2 without a deliberate review risks investing Phase 2 effort in a direction that Phase 1 findings already contradict.
 
 ## 7. Risk register
 
