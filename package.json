@@ -11,21 +11,15 @@
     "store",
     "typescript"
   ],
-  "workspaces": [
-    "packages/*",
-    "demo/*",
-    "docs"
-  ],
   "scripts": {
-    "check-audit": "check-audit --yarn",
     "graph": "nx dep-graph",
     "package": "nx run-many --target=package --all --parallel=4",
-    "postinstall": "husky install && syncpack format",
-    "resolve-audit": "resolve-audit --yarn",
+    "postinstall": "husky && syncpack format",
+    "preinstall": "only-allow pnpm",
     "set-packages-versions": "ts-node scripts/setPackagesVersions",
     "test": "nx run-many --target=test --all",
     "test-affected": "nx affected --target=test",
-    "test-circular": "yarn depcruise --validate .dependency-cruiser.js .",
+    "test-circular": "pnpm exec depcruise --validate .dependency-cruiser.js .",
     "test-linter": "nx run-many --target=test-linter --all --parallel=4",
     "test-type": "nx run-many --target=test-type --all --parallel=4",
     "test-unit": "nx run-many --target=test-unit --all --parallel=4",
@@ -50,8 +44,8 @@
     "eslint-plugin-prettier": "^5.5.4",
     "globals": "^16.4.0",
     "husky": "^9.1.7",
-    "npm-audit-resolver": "^3.0.0-RC.0",
     "nx": "^21.5.3",
+    "only-allow": "1.2.2",
     "prettier": "^3.6.2",
     "syncpack": "^13.0.4",
     "ts-node": "^10.9.2",
@@ -67,6 +61,6 @@
     "Valentin Beggi",
     "Stanislas Hannebelle"
   ],
-  "packageManager": "yarn@4.10.2",
+  "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319",
   "type": "module"
 }
