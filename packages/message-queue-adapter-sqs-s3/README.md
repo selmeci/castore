@@ -12,6 +12,9 @@ Do not forget to set a [lifecycle configuration](https://docs.aws.amazon.com/Ama
 # npm
 npm install @castore/message-queue-adapter-sqs-s3
 
+# pnpm
+pnpm add @castore/message-queue-adapter-sqs-s3
+
 # yarn
 yarn add @castore/message-queue-adapter-sqs-s3
 ```
@@ -21,6 +24,9 @@ This package has `@castore/core`, `@aws-sdk/client-sqs` (above v3), `@aws-sdk/cl
 ```bash
 # npm
 npm install @castore/core @aws-sdk/client-sqs @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
+
+# pnpm
+pnpm add @castore/core @aws-sdk/client-sqs @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
 
 # yarn
 yarn add @castore/core @aws-sdk/client-sqs @aws-sdk/client-s3 @aws-sdk/s3-request-presigner

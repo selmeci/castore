@@ -8,6 +8,9 @@ DRY Castore [`MessageBus`](https://castore-dev.github.io/castore/docs/reacting-t
 # npm
 npm install @castore/message-bus-adapter-event-bridge
 
+# pnpm
+pnpm add @castore/message-bus-adapter-event-bridge
+
 # yarn
 yarn add @castore/message-bus-adapter-event-bridge
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` and `@aws-sdk/client-eventbridge` (above v3) as
 ```bash
 # npm
 npm install @castore/core @aws-sdk/client-eventbridge
+
+# pnpm
+pnpm add @castore/core @aws-sdk/client-eventbridge
 
 # yarn
 yarn add @castore/core @aws-sdk/client-eventbridge

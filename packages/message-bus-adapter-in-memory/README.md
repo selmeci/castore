@@ -8,6 +8,9 @@ DRY Castore [`MessageBus`](https://castore-dev.github.io/castore/docs/reacting-t
 # npm
 npm install @castore/message-bus-adapter-in-memory
 
+# pnpm
+pnpm add @castore/message-bus-adapter-in-memory
+
 # yarn
 yarn add @castore/message-bus-adapter-in-memory
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` as peer dependency, so you will have to install
 ```bash
 # npm
 npm install @castore/core
+
+# pnpm
+pnpm add @castore/core
 
 # yarn
 yarn add @castore/core

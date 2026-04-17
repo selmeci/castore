@@ -8,6 +8,9 @@ DRY Castore [`EventStorageAdapter`](https://castore-dev.github.io/castore/docs/e
 # npm
 npm install @castore/event-storage-adapter-redux
 
+# pnpm
+pnpm add @castore/event-storage-adapter-redux
+
 # yarn
 yarn add @castore/event-storage-adapter-redux
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core`, `@reduxjs/toolkit` (above v1.9) and `react-red
 ```bash
 # npm
 npm install @castore/core @reduxjs/toolkit react-redux
+
+# pnpm
+pnpm add @castore/core @reduxjs/toolkit react-redux
 
 # yarn
 yarn add @castore/core @reduxjs/toolkit react-redux

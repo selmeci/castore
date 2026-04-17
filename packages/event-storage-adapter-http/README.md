@@ -10,6 +10,9 @@ This class is mainly useful when you already have the logic for events implement
 # npm
 npm install @castore/event-storage-adapter-http
 
+# pnpm
+pnpm add @castore/event-storage-adapter-http
+
 # yarn
 yarn add @castore/event-storage-adapter-http
 ```
@@ -19,6 +22,9 @@ This package has `@castore/core` as peer dependency, so you will have to install
 ```bash
 # npm
 npm install @castore/core
+
+# pnpm
+pnpm add @castore/core
 
 # yarn
 yarn add @castore/core

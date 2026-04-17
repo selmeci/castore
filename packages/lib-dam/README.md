@@ -8,6 +8,9 @@ Data maintenance & migration tooling for the [Castore](https://github.com/castor
 # npm
 npm install --save-dev @castore/lib-dam
 
+# pnpm
+pnpm add --dev @castore/lib-dam
+
 # yarn
 yarn add --dev @castore/lib-dam
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` as peer dependency, so you will have to install
 ```bash
 # npm
 npm install @castore/core
+
+# pnpm
+pnpm add @castore/core
 
 # yarn
 yarn add @castore/core

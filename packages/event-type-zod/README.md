@@ -8,6 +8,9 @@ DRY Castore [`EventType`](https://castore-dev.github.io/castore/docs/event-sourc
 # npm
 npm install @castore/event-type-zod
 
+# pnpm
+pnpm add @castore/event-type-zod
+
 # yarn
 yarn add @castore/event-type-zod
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` and `zod` (above v3) as peer dependencies, so y
 ```bash
 # npm
 npm install @castore/core zod
+
+# pnpm
+pnpm add @castore/core zod
 
 # yarn
 yarn add @castore/core zod

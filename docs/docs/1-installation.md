@@ -5,6 +5,9 @@ sidebar_position: 1
 # Installation
 
 ```bash
+# pnpm
+pnpm add @castore/core
+
 # npm
 npm install @castore/core
 

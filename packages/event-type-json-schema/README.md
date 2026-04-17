@@ -8,6 +8,9 @@ DRY Castore [`EventType`](https://castore-dev.github.io/castore/docs/event-sourc
 # npm
 npm install @castore/event-type-json-schema
 
+# pnpm
+pnpm add @castore/event-type-json-schema
+
 # yarn
 yarn add @castore/event-type-json-schema
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` and `json-schema-to-ts` (above v2) as peer depe
 ```bash
 # npm
 npm install @castore/core json-schema-to-ts
+
+# pnpm
+pnpm add @castore/core json-schema-to-ts
 
 # yarn
 yarn add @castore/core json-schema-to-ts

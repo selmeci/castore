@@ -8,6 +8,9 @@ DRY Castore [`Command`](https://castore-dev.github.io/castore/docs/event-sourcin
 # npm
 npm install @castore/command-zod
 
+# pnpm
+pnpm add @castore/command-zod
+
 # yarn
 yarn add @castore/command-zod
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` and `zod` (above v3) as peer dependencies, so y
 ```bash
 # npm
 npm install @castore/core zod
+
+# pnpm
+pnpm add @castore/core zod
 
 # yarn
 yarn add @castore/core zod
