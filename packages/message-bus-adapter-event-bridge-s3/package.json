@@ -37,6 +37,7 @@
     "watch": "rm -rf dist && concurrently 'yarn:package-* --watch'"
   },
   "dependencies": {
+    "@babel/runtime": "^7.28.4",
     "@castore/message-bus-adapter-event-bridge": "workspace:",
     "@types/aws-lambda": "^8.10.152",
     "lodash.chunk": "^4.2.0",

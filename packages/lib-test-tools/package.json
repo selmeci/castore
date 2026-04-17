@@ -37,6 +37,7 @@
     "watch": "rm -rf dist && concurrently 'yarn:package-* --watch'"
   },
   "dependencies": {
+    "@babel/runtime": "^7.28.4",
     "@castore/event-storage-adapter-in-memory": "workspace:"
   },
   "devDependencies": {
@@ -54,6 +55,7 @@
     "eslint": "^9.36.0",
     "prettier": "^3.6.2",
     "ts-node": "^10.9.2",
+    "ts-toolbelt": "^9.6.0",
     "tsc-alias": "^1.8.16",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"
