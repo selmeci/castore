@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "grepai-search-basics": {
+      "source": "yoanbernabeu/grepai-skills",
+      "sourceType": "github",
+      "computedHash": "6d1c8fd307579231238ffa15f6f6b615106862bacb0bc056af670ee0ea513d36"
+    }
+  }
+}
