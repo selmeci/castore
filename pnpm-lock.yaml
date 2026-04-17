@@ -593,6 +593,9 @@ importers:
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
+      '@types/lodash.omit':
+        specifier: ^4.5.9
+        version: 4.5.9
       '@types/node':
         specifier: ^24.5.2
         version: 24.12.2
@@ -617,6 +620,9 @@ importers:
       eslint:
         specifier: ^9.36.0
         version: 9.39.4(jiti@2.6.1)
+      lodash.omit:
+        specifier: ^4.5.0
+        version: 4.18.0
       mysql2:
         specifier: ^3.22.1
         version: 3.22.1(@types/node@24.12.2)
