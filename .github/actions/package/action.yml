@@ -7,9 +7,15 @@ runs:
       id: sync-packages-cache
       uses: actions/cache@v4
       with:
+        # Cache the actual dist/ directories at their source locations.
+        # Under pnpm, node_modules/@castore/* are NOT present (workspaces
+        # are resolved through .pnpm/ and consumer-package node_modules),
+        # so the Yarn-era glob node_modules/@castore/**/dist matches
+        # nothing and silently caches empty state.
         path: |
-          node_modules/@castore/**/dist
-        key: ${{ hashFiles('./packages/**') }}-${{ hashFiles('./demo/**') }}
+          packages/*/dist
+          demo/*/dist
+        key: castore-dist-${{ hashFiles('packages/**/src/**', 'packages/**/package.json', 'demo/**/src/**', 'demo/**/package.json', 'commonConfiguration/**', 'tsconfig.json') }}
     - name: Package
       run: if [ '${{ steps.sync-packages-cache.outputs.cache-hit }}' != 'true' ]; then pnpm package; fi
       shell: bash
