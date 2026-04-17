@@ -1,0 +1,112 @@
+{
+  "name": "@castore/event-storage-adapter-drizzle",
+  "description": "DRY Castore EventStorageAdapter implementations for PostgreSQL, MySQL, and SQLite backed by Drizzle ORM",
+  "license": "MIT",
+  "homepage": "https://github.com/castore-dev/castore#readme",
+  "bugs": "https://github.com/castore-dev/castore/issues",
+  "repository": "castore-dev/castore.git",
+  "keywords": [
+    "drizzle",
+    "event",
+    "mysql",
+    "postgres",
+    "source",
+    "sqlite",
+    "store",
+    "typescript"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "main": "dist/cjs/index.cjs",
+  "module": "dist/esm/index.mjs",
+  "types": "dist/types/index.d.ts",
+  "scripts": {
+    "lint-fix": "eslint --fix",
+    "lint-fix-all": "pnpm run lint-fix .",
+    "package": "rm -rf dist && pnpm run package-cjs && pnpm run package-esm && pnpm run package-types",
+    "package-cjs": "NODE_ENV=cjs pnpm run transpile --out-dir dist/cjs --source-maps --out-file-extension .cjs",
+    "package-esm": "NODE_ENV=esm pnpm run transpile --out-dir dist/esm --source-maps --out-file-extension .mjs",
+    "package-types": "tsc -p tsconfig.build.json && tsc-alias -p tsconfig.build.json",
+    "test": "pnpm run test-type && pnpm run test-unit && pnpm run test-circular && pnpm run test-linter",
+    "test-circular": "depcruise --validate .dependency-cruiser.js .",
+    "test-linter": "eslint .",
+    "test-type": "tsc --noEmit --emitDeclarationOnly false",
+    "test-unit": "vitest run --passWithNoTests",
+    "transpile": "babel src --extensions .ts --quiet",
+    "watch": "rm -rf dist && concurrently 'npm:package-* --watch'"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.28.4"
+  },
+  "devDependencies": {
+    "@babel/cli": "^7.28.3",
+    "@babel/core": "^7.28.4",
+    "@babel/plugin-transform-runtime": "^7.28.3",
+    "@babel/preset-env": "^7.28.3",
+    "@babel/preset-typescript": "^7.27.1",
+    "@castore/core": "workspace:*",
+    "@libsql/client": "^0.17.2",
+    "@testcontainers/mysql": "^11.14.0",
+    "@testcontainers/postgresql": "^10.28.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.5.2",
+    "@types/pg": "^8.20.0",
+    "babel-plugin-module-resolver": "^4.1.0",
+    "better-sqlite3": "^12.9.0",
+    "concurrently": "^9.2.1",
+    "dependency-cruiser": "^17.0.1",
+    "drizzle-orm": "^0.45.2",
+    "eslint": "^9.36.0",
+    "mysql2": "^3.22.1",
+    "pg": "^8.20.0",
+    "postgres": "^3.4.7",
+    "prettier": "^3.6.2",
+    "ts-node": "^10.9.2",
+    "tsc-alias": "^1.8.16",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.mjs",
+      "require": "./dist/cjs/index.cjs",
+      "default": "./dist/esm/index.mjs"
+    },
+    "./pg": {
+      "types": "./dist/types/pg/index.d.ts",
+      "import": "./dist/esm/pg/index.mjs",
+      "require": "./dist/cjs/pg/index.cjs",
+      "default": "./dist/esm/pg/index.mjs"
+    },
+    "./mysql": {
+      "types": "./dist/types/mysql/index.d.ts",
+      "import": "./dist/esm/mysql/index.mjs",
+      "require": "./dist/cjs/mysql/index.cjs",
+      "default": "./dist/esm/mysql/index.mjs"
+    },
+    "./sqlite": {
+      "types": "./dist/types/sqlite/index.d.ts",
+      "import": "./dist/esm/sqlite/index.mjs",
+      "require": "./dist/cjs/sqlite/index.cjs",
+      "default": "./dist/esm/sqlite/index.mjs"
+    }
+  },
+  "maintainers": [
+    "Thomas Aribart",
+    "Charles Géry",
+    "Juliette Fournier",
+    "Valentin Beggi",
+    "Stanislas Hannebelle"
+  ],
+  "peerDependencies": {
+    "@castore/core": "*",
+    "drizzle-orm": ">=0.35.0"
+  },
+  "type": "module"
+}
