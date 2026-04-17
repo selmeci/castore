@@ -21,7 +21,7 @@ describe('zodEvent implementation', () => {
 
   type Payload = z.infer<typeof payloadSchema>;
 
-  const metadataSchema = z.object({ userEmail: z.string().email() });
+  const metadataSchema = z.object({ userEmail: z.email() });
 
   type Metadata = z.infer<typeof metadataSchema>;
 

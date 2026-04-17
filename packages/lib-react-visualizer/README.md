@@ -10,6 +10,9 @@ Here is a [hosted example](https://castore-dev.github.io/castore/visualizer/), b
 # npm
 npm install --save-dev @castore/lib-react-visualizer
 
+# pnpm
+pnpm add --dev @castore/lib-react-visualizer
+
 # yarn
 yarn add --dev @castore/lib-react-visualizer
 ```
@@ -19,6 +22,9 @@ This package has `@castore/core`, `@castore/command-json-schema` and `react` (ab
 ```bash
 # npm
 npm install @castore/core @castore/command-json-schema react
+
+# pnpm
+pnpm add @castore/core @castore/command-json-schema react
 
 # yarn
 yarn add @castore/core @castore/command-json-schema react

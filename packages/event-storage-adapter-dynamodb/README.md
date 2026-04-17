@@ -8,6 +8,9 @@ DRY Castore [`EventStorageAdapter`](https://castore-dev.github.io/castore/docs/e
 # npm
 npm install @castore/event-storage-adapter-dynamodb
 
+# pnpm
+pnpm add @castore/event-storage-adapter-dynamodb
+
 # yarn
 yarn add @castore/event-storage-adapter-dynamodb
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` and `@aws-sdk/client-dynamodb` (above v3) as pe
 ```bash
 # npm
 npm install @castore/core @aws-sdk/client-dynamodb
+
+# pnpm
+pnpm add @castore/core @aws-sdk/client-dynamodb
 
 # yarn
 yarn add @castore/core @aws-sdk/client-dynamodb

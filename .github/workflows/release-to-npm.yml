@@ -21,7 +21,7 @@ jobs:
         uses: ./.github/actions/package
 
       - name: Set packages versions
-        run: yarn set-packages-versions ${{ github.event.release.tag_name }}
+        run: pnpm set-packages-versions ${{ github.event.release.tag_name }}
 
       - name: Copy paste root README to @castore/core
         run: cp README.md ./packages/core/README.md

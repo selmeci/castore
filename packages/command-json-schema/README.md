@@ -8,6 +8,9 @@ DRY Castore [`Command`](https://castore-dev.github.io/castore/docs/event-sourcin
 # npm
 npm install @castore/command-json-schema
 
+# pnpm
+pnpm add @castore/command-json-schema
+
 # yarn
 yarn add @castore/command-json-schema
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` and `json-schema-to-ts` (above v2) as peer depe
 ```bash
 # npm
 npm install @castore/core json-schema-to-ts
+
+# pnpm
+pnpm add @castore/core json-schema-to-ts
 
 # yarn
 yarn add @castore/core json-schema-to-ts

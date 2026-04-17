@@ -15,13 +15,14 @@ import {
   ParsedPageToken,
 } from '~/utils/parseAppliedListAggregateIdsOptions';
 
-// eslint-disable-next-line complexity
+/* eslint-disable complexity */
 export const useAggregateIds = <EVENT_STORE extends EventStore>(
   eventStore: EVENT_STORE,
   { pageToken: inputPageToken, ...inputOptions }: ListAggregateIdsOptions = {},
 ): ListAggregateIdsOutput => {
-  const storeAggregateEntries = (useSelector<
-    Record<string, EventStoreReduxState<EVENT_STORE>>
+  const storeAggregateEntries = useSelector<
+    Record<string, EventStoreReduxState<EVENT_STORE>>,
+    { aggregateId: string; initialEventTimestamp: string }[]
   >(state => {
     const eventStorageAdapter = eventStore.getEventStorageAdapter();
 
@@ -39,10 +40,7 @@ export const useAggregateIds = <EVENT_STORE extends EventStore>(
     }
 
     return eventStoreState.aggregateIds;
-  }) ?? []) as {
-    aggregateId: string;
-    initialEventTimestamp: string;
-  }[];
+  });
 
   const {
     limit,

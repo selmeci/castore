@@ -8,6 +8,9 @@ DRY Castore [`MessageQueue`](https://castore-dev.github.io/castore/docs/reacting
 # npm
 npm install @castore/message-queue-adapter-sqs
 
+# pnpm
+pnpm add @castore/message-queue-adapter-sqs
+
 # yarn
 yarn add @castore/message-queue-adapter-sqs
 ```
@@ -17,6 +20,9 @@ This package has `@castore/core` and `@aws-sdk/client-sqs` (above v3) as peer de
 ```bash
 # npm
 npm install @castore/core @aws-sdk/client-sqs
+
+# pnpm
+pnpm add @castore/core @aws-sdk/client-sqs
 
 # yarn
 yarn add @castore/core @aws-sdk/client-sqs

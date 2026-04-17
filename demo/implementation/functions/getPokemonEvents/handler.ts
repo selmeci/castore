@@ -1,3 +1,5 @@
+import type { MiddyfiedHandler } from '@middy/core';
+
 import { EventDetail } from '@castore/core';
 
 import { pokemonsEventStore } from '~/libs/eventStores/pokemons';
@@ -15,4 +17,8 @@ export const getPokemonEvents = async (
   return pokemonsEventStore.getEvents(aggregateId);
 };
 
-export const main = applyConsoleMiddleware(getPokemonEvents, { inputSchema });
+type Main = MiddyfiedHandler<Input, { events: EventDetail[] }>;
+
+export const main: Main = applyConsoleMiddleware(getPokemonEvents, {
+  inputSchema,
+});

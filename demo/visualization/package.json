@@ -2,12 +2,12 @@
   "name": "@castore/demo-visualization",
   "scripts": {
     "build": "rm -rf dist && vite build",
-    "lint-fix": "yarn eslint --fix",
-    "lint-fix-all": "yarn lint-fix .",
+    "lint-fix": "eslint --fix",
+    "lint-fix-all": "pnpm run lint-fix .",
     "start": "vite",
-    "test": "yarn test-type && yarn test-circular && yarn test-linter",
-    "test-circular": "yarn depcruise --validate .dependency-cruiser.js .",
-    "test-linter": "yarn eslint .",
+    "test": "pnpm run test-type && pnpm run test-circular && pnpm run test-linter",
+    "test-circular": "depcruise --validate .dependency-cruiser.js .",
+    "test-linter": "eslint .",
     "test-type": "tsc --noEmit --emitDeclarationOnly false"
   },
   "browserslist": {
@@ -23,10 +23,10 @@
     ]
   },
   "dependencies": {
-    "@castore/command-json-schema": "workspace:",
-    "@castore/core": "workspace:",
-    "@castore/demo-blueprint": "workspace:",
-    "@castore/lib-react-visualizer": "workspace:",
+    "@castore/command-json-schema": "workspace:*",
+    "@castore/core": "workspace:*",
+    "@castore/demo-blueprint": "workspace:*",
+    "@castore/lib-react-visualizer": "workspace:*",
     "@mui/material": "^5.18.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

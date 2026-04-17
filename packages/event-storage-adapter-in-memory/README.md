@@ -10,6 +10,9 @@ This class is mainly useful for manual and unit tests. It is obviously not recom
 # npm
 npm install @castore/event-storage-adapter-in-memory
 
+# pnpm
+pnpm add @castore/event-storage-adapter-in-memory
+
 # yarn
 yarn add @castore/event-storage-adapter-in-memory
 ```
@@ -19,6 +22,9 @@ This package has `@castore/core` as peer dependency, so you will have to install
 ```bash
 # npm
 npm install @castore/core
+
+# pnpm
+pnpm add @castore/core
 
 # yarn
 yarn add @castore/core

@@ -12,6 +12,9 @@ Do not forget to set a [lifecycle configuration](https://docs.aws.amazon.com/Ama
 # npm
 npm install @castore/message-bus-adapter-event-bridge-s3
 
+# pnpm
+pnpm add @castore/message-bus-adapter-event-bridge-s3
+
 # yarn
 yarn add @castore/message-bus-adapter-event-bridge-s3
 ```
@@ -21,6 +24,9 @@ This package has `@castore/core`, `@aws-sdk/client-eventbridge` (above v3), `@aw
 ```bash
 # npm
 npm install @castore/core @aws-sdk/client-eventbridge @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
+
+# pnpm
+pnpm add @castore/core @aws-sdk/client-eventbridge @aws-sdk/client-s3 @aws-sdk/s3-request-presigner
 
 # yarn
 yarn add @castore/core @aws-sdk/client-eventbridge @aws-sdk/client-s3 @aws-sdk/s3-request-presigner

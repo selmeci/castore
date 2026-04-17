@@ -19,7 +19,6 @@
     "allowJs": true,
     "strict": true,
     "skipLibCheck": true,
-    "preserveSymlinks": true,
     "isolatedModules": true,
     "jsx": "react",
     "module": "esnext",

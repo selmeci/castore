@@ -25,7 +25,7 @@ This checkout is an internal fork takeover. `origin` points to `selmeci/castore`
 
 ## Repository layout
 
-Castore is a Yarn 4 + Nx monorepo of TypeScript packages for event sourcing. Workspaces live in `packages/*`, `demo/*`, and `docs`. Node `^22.19.0` and Yarn `4.10.2` are required (the repo is ESM-first: `"type": "module"` at the root).
+Castore is a pnpm + Nx monorepo of TypeScript packages for event sourcing. Workspaces live in `packages/*`, `demo/*`, and `docs` (declared in `pnpm-workspace.yaml`). Node `^22.19.0` and pnpm `10.33.0` are required — enforced at install time via `packageManager` + the `preinstall: only-allow pnpm` guard. The repo is ESM-first (`"type": "module"` at the root).
 
 - `packages/core` — the event-sourcing primitives (`EventStore`, `EventType`, `Command`, `ConnectedEventStore`, messaging channels/bus/queue). Everything else is an adapter or extension.
 - `packages/event-storage-adapter-*` — persistence backends for an `EventStorageAdapter` (DynamoDB, Postgres, HTTP, in-memory, Redux).
@@ -35,29 +35,37 @@ Castore is a Yarn 4 + Nx monorepo of TypeScript packages for event sourcing. Wor
 - `demo/{blueprint,implementation,visualization}` — runnable demos that exercise the packages end-to-end.
 - `docs` — Docusaurus site under `docs/docs/` (installation, event sourcing concepts, reacting-to-events, migration guides).
 - `commonConfiguration/{babel.config.js,vite.config.js}` — shared build/test configs consumed by every package.
-- `scripts/setPackagesVersions.ts` — release helper invoked via `yarn set-packages-versions`.
+- `scripts/setPackagesVersions.ts` — release helper invoked via `pnpm set-packages-versions`.
 
 ## Common commands
 
 Root-level (run from repo root; Nx caches and fans out across workspaces):
 
-- `yarn package` — build every package (rm -rf dist, then CJS + ESM + types). Run before any script that depends on another package's `dist/`.
-- `yarn test` — runs each package's `test` target (which chains type + unit + circular + linter).
-- `yarn test-unit` / `yarn test-type` / `yarn test-linter` — run just that dimension across all packages.
-- `yarn test-affected` — Nx affected graph against `main` (the default base, see `nx.json`).
-- `yarn test-circular` — repo-wide dependency-cruiser check using `.dependency-cruiser.js`.
-- `yarn watch` — parallel watch mode across all packages (rebuilds CJS/ESM/types on change).
-- `yarn graph` — open the Nx dep graph.
+- `pnpm package` — build every package (rm -rf dist, then CJS + ESM + types). Run before any script that depends on another package's `dist/`.
+- `pnpm test` — runs each package's `test` target (which chains type + unit + circular + linter).
+- `pnpm test-unit` / `pnpm test-type` / `pnpm test-linter` — run just that dimension across all packages.
+- `pnpm test-affected` — Nx affected graph against `main` (the default base, see `nx.json`).
+- `pnpm test-circular` — repo-wide dependency-cruiser check using `.dependency-cruiser.js`.
+- `pnpm watch` — parallel watch mode across all packages (rebuilds CJS/ESM/types on change).
+- `pnpm graph` — open the Nx dep graph.
 
-Per-package (run from inside `packages/<name>` with `yarn`, or target via Nx, e.g. `yarn nx run core:test-unit`):
+Per-package (run from inside `packages/<name>` with `pnpm`, or target via Nx, e.g. `pnpm nx run core:test-unit`):
 
-- `yarn package` — build just that package. Sub-targets: `package-cjs`, `package-esm`, `package-types`.
-- `yarn test-unit` — `vitest run --passWithNoTests`. Run a single file with `yarn vitest run path/to/file.unit.test.ts`, a single test with `-t "name"`, and watch with `yarn vitest` (no `run`).
-- `yarn test-type` — `tsc --noEmit` using the package's `tsconfig.json`.
-- `yarn test-linter` — `eslint .`. Use `yarn lint-fix <path>` or `yarn lint-fix-all` to autofix.
-- `yarn test-circular` — dependency-cruiser for just this package.
+- `pnpm package` — build just that package. Sub-targets: `package-cjs`, `package-esm`, `package-types`.
+- `pnpm test-unit` — `vitest run --passWithNoTests`. Run a single file with `pnpm vitest run path/to/file.unit.test.ts`, a single test with `-t "name"`, and watch with `pnpm vitest` (no `run`).
+- `pnpm test-type` — `tsc --noEmit` using the package's `tsconfig.json`.
+- `pnpm test-linter` — `eslint .`. Use `pnpm lint-fix <path>` or `pnpm lint-fix-all` to autofix.
+- `pnpm test-circular` — dependency-cruiser for just this package.
 
-Commits are linted by commitlint (conventional commits) via a Husky hook installed by `postinstall`. Don't pass `--no-verify`.
+Commits are linted by commitlint (conventional commits) via a Husky hook installed by `postinstall`. Don't pass `--no-verify`. PR titles are validated by the same conventional-commits rules in CI (`amannn/action-semantic-pull-request`). Both commit messages and PR titles must use the same format:
+
+```
+type(scope): lowercase description
+```
+
+Allowed types: `feat`, `fix`, `build`, `chore`, `ci`, `docs`, `style`, `refactor`, `perf`, `test`, `revert`. The subject must start lowercase. Scope is optional but encouraged (typically a package name like `core`, `pnpm`, `docs`). Do **not** use types from other presets (e.g. `feature`, `update`, `new` from the beemo preset) — they will pass locally but fail CI, or vice-versa.
+
+`.npmrc` at the root sets `strict-peer-dependencies=true`, `auto-install-peers=false`, and a fail-closed `only-built-dependencies[]` allow-list. Any new package with an install/postinstall script must be added explicitly to that list (with justification) or it will be blocked.
 
 ## Build pipeline (important when touching configs)
 
