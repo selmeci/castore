@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Produce the gap-analysis & roadmap deliverable at `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` that satisfies every success criterion in `docs/superpowers/specs/2026-04-16-castore-es-gap-analysis-design.md` §7.
+**Goal:** Produce the gap-analysis & roadmap deliverable at `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` that satisfies every success criterion in `specs/requirements/2026-04-16-castore-es-gap-analysis-requirements.md` §7.
 
 **Architecture:** A research deliverable — not code. The plan executes the spec's methodology in 7 chunks: (1) skeleton & methodology, (2) castore code audit for 26 features, (3) competitor harvest + matrix, (4) gap catalogue + DAG, (5) risk register verification, (6) prioritized roadmap, (7) finalization. Work is mostly read + grep + write + commit. "Tests" are validation grep-checks against the deliverable itself.
 
@@ -15,7 +15,7 @@
 - Do **not** run competitor hands-on POCs unless the spec §9 OQ-4 decision changes to "hands-on". Default is documentation-only.
 - Do **not** begin the Fork & Trim or Health Audit sub-projects — separate brainstorming cycles.
 
-**Abbreviations used below:** "the spec" = `docs/superpowers/specs/2026-04-16-castore-es-gap-analysis-design.md`; "the deliverable" = `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`.
+**Abbreviations used below:** "the spec" = `specs/requirements/2026-04-16-castore-es-gap-analysis-requirements.md`; "the deliverable" = `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`.
 
 **Commit cadence:** one commit per completed task unless otherwise stated. All commits use `--no-verify` until `.husky/commit-msg` is fixed (separate ticket). Commit messages prefix with `docs(gap-analysis):`.
 
@@ -25,9 +25,9 @@
 
 | Path | Responsibility |
 |---|---|
-| `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` | **The deliverable.** Single markdown file with 8 sections per spec §1. |
-| `docs/superpowers/specs/2026-04-16-castore-es-gap-analysis-design.md` | Read-only reference. Do not edit. If the spec is wrong, surface and pause — do not silently deviate. |
-| `docs/superpowers/plans/2026-04-16-castore-es-gap-analysis.md` | This plan. Update checkboxes as work progresses. |
+| `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` | **The deliverable.** Single markdown file with 8 sections per spec §1. |
+| `specs/requirements/2026-04-16-castore-es-gap-analysis-requirements.md` | Read-only reference. Do not edit. If the spec is wrong, surface and pause — do not silently deviate. |
+| `specs/plans/2026-04-16-001-castore-es-gap-analysis-plan.md` | This plan. Update checkboxes as work progresses. |
 
 No other files are created or modified by this plan. If you find yourself wanting to change `packages/core/src/**`, stop — that is implementation work, not research.
 
@@ -40,10 +40,10 @@ No other files are created or modified by this plan. If you find yourself wantin
 ### Task 1.1: Scaffold the deliverable file
 
 **Files:**
-- Create: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`
+- Create: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`
 
 - [ ] **Step 1: Read the spec end-to-end to ground yourself.**
-  - Read: `docs/superpowers/specs/2026-04-16-castore-es-gap-analysis-design.md`
+  - Read: `specs/requirements/2026-04-16-castore-es-gap-analysis-requirements.md`
   - Focus on §1 (TOC), §7 (success criteria), §9 (open questions).
 
 - [ ] **Step 2: Create the deliverable file with 8 top-level section headers mirroring spec §1 verbatim.**
@@ -51,17 +51,17 @@ No other files are created or modified by this plan. If you find yourself wantin
   - Under each section header, add a stub: `> TODO: see spec §N for template.` These stubs will be replaced chunk-by-chunk.
 
 - [ ] **Step 3: Validate the file renders.**
-  - Run: `grep -c "^## " docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`
+  - Run: `grep -c "^## " specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`
   - Expected: `8`
 
 - [ ] **Step 4: Commit.**
-  - `git add docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`
+  - `git add specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`
   - `git commit --no-verify -m "docs(gap-analysis): scaffold deliverable with 8 section headers"`
 
 ### Task 1.2: Write §1 Scope & methodology
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§1)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§1)
 
 - [ ] **Step 1: Copy the context block from spec §0 "Context established during brainstorming" into §1 of the deliverable, reformatted as prose, not bullet-list.**
   - Must cover: internal-fork relationship, greenfield stage, 8 in-scope packages, 10 out-of-scope packages (name them), D1 + N1+N4+N5+N6 profile, option A analysis depth.
@@ -76,7 +76,7 @@ No other files are created or modified by this plan. If you find yourself wantin
   - 3–4 sentences directing the reader to the two highest-value entry points: §6 opener (go/no-go) for executives, §5 gap catalogue for engineers.
 
 - [ ] **Step 5: Validate.**
-  - Run: `grep -c "^### " docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`
+  - Run: `grep -c "^### " specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`
   - Expected: `>= 3` (one subsection per methodology/selection/orientation).
 
 - [ ] **Step 6: Commit.**
@@ -85,7 +85,7 @@ No other files are created or modified by this plan. If you find yourself wantin
 ### Task 1.3: Write §2 Canonical ES feature catalogue
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§2)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§2)
 
 - [ ] **Step 1: Copy the 26-feature list from spec §2 verbatim into §2 of the deliverable.**
   - Preserve the 5 category headers (A–E) and feature numbering 1–26.
@@ -95,7 +95,7 @@ No other files are created or modified by this plan. If you find yourself wantin
   - Source material: Evans (DDD), Young (CQRS), Dudycz (event-driven.io), Vernon (IDDD). Cite ≥1 canonical reference in the category intro.
 
 - [ ] **Step 3: Validate.**
-  - Run: `grep -c "^\*\*F[0-9]\+" docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (assuming `**F1 — ...**` style).
+  - Run: `grep -c "^\*\*F[0-9]\+" specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (assuming `**F1 — ...**` style).
   - Expected: `26`.
 
 - [ ] **Step 4: Commit.**
@@ -122,7 +122,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 2.1: Audit Category A — Storage & consistency (F1–F5)
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§4 Category A)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§4 Category A)
 - Read-only: `packages/core/src/**`, `packages/event-storage-adapter-postgres/src/**`, `packages/event-storage-adapter-in-memory/src/**`
 
 - [ ] **Step 1: For F1 "Append-only event log per aggregate" — locate the push semantics.**
@@ -152,7 +152,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 2.2: Audit Category B — Projection & read-side (F6–F10)
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§4 Category B)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§4 Category B)
 - Read-only: `packages/core/src/messaging/**`, `packages/core/src/connectedEventStore/**`
 
 - [ ] **Step 1: For F6 "Projection runner with checkpoints" — inspect the messaging + connectedEventStore abstractions.**
@@ -169,7 +169,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 2.3: Audit Category C — Schema evolution (F11–F14)
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§4 Category C)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§4 Category C)
 - Read-only: `packages/core/src/event/**`, `packages/event-type-zod/src/**`
 
 - [ ] **Step 1: F11 "Explicit event versioning" — read `packages/core/src/event/eventDetail.ts` and `eventType.ts`. Does the event envelope include a `version` field distinct from aggregate version?**
@@ -185,7 +185,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 2.4: Audit Category D — Distributed delivery (F15–F19)
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§4 Category D)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§4 Category D)
 - Read-only: `packages/message-bus-adapter-event-bridge/src/**`, `packages/message-bus-adapter-event-bridge-s3/src/**`
 
 - [ ] **Step 1: F15 "Transactional outbox" — critical. Read `connectedEventStore.ts` `publishPushedEvent.ts`. Determine: is the bus publish in the same DB transaction as the event write?**
@@ -205,7 +205,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 2.5: Audit Category E — Operational & governance (F20–F26)
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§4 Category E)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§4 Category E)
 
 - [ ] **Step 1: F20 "Crypto-shredding" — apply the Absence evidence protocol with regexes `crypto.?shred|per.?subject.?key|encryption.?key|\bkms\b|envelope.?encrypt`.**
 
@@ -226,7 +226,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 2.6: Harvest upstream signals
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§8 Appendix — upstream notes)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§8 Appendix — upstream notes)
 
 - [ ] **Step 0: Verify `gh` is authenticated.**
   - Run: `gh auth status`
@@ -250,7 +250,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 2.7: Write "What castore does exceptionally well"
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§4 trailing subsection)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§4 trailing subsection)
 
 - [ ] **Step 1: Based on audit evidence collected in 2.1–2.5, write ≤1-page subsection titled "What castore does exceptionally well (for the finance profile)".**
   - Must include the 5 bullets from spec §4 (pushEventGroup for double-entry, simulate APIs, type-level reducer contracts, version-based OCC, lib-test-tools + in-memory adapter).
@@ -261,18 +261,18 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 2.8: Validate Chunk 2 acceptance
 
 - [ ] **Step 1: Acceptance check — every feature has evidence.**
-  - Run: `grep -E "^### Feature [0-9]+" docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md | wc -l`
+  - Run: `grep -E "^### Feature [0-9]+" specs/requirements/2026-04-16-castore-es-gap-analysis-research.md | wc -l`
   - Expected: `26`
 
 - [ ] **Step 2: Every entry has a Layer + Status field.**
-  - Run: `grep -c "^Status:" docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`
+  - Run: `grep -c "^Status:" specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`
   - Expected: `>= 26`
 
 - [ ] **Step 3: Every ❌/⚠️ feature has either a `file:line` ref for the "workaround" or an explicit "absence confirmed by grep on <date>" note.**
   - Manual review — eyeball all ❌/⚠️ entries.
 
 - [ ] **Step 4: Category tally lines present.**
-  - Run: `grep -c "Category [A-E] tally" docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`
+  - Run: `grep -c "Category [A-E] tally" specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`
   - Expected: `5`
 
 - [ ] **Step 5: If all pass, final chunk commit: `docs(gap-analysis): complete §4 castore audit`. Else, return to failing task.**
@@ -286,7 +286,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 3.1: Emmett profile
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§3 Emmett subsection)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§3 Emmett subsection)
 
 - [ ] **Step 1: Fetch Emmett docs via context7 MCP.**
   - Run context7: resolve library ID `event-driven-io/emmett`; get documentation for topics "event store", "projections", "snapshots", "outbox", "schema evolution".
@@ -306,7 +306,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 3.2: EventStoreDB profile
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§3 EventStoreDB subsection)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§3 EventStoreDB subsection)
 
 - [ ] **Step 1: Fetch docs via context7: library ID `eventstore` or `kurrent` (try both).**
 
@@ -336,7 +336,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 3.5: DIY Postgres baseline column
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§3 DIY baseline subsection)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§3 DIY baseline subsection)
 
 - [ ] **Step 1: For each of the 26 features, answer one question: "Is this achievable with `pg` + `SKIP LOCKED` + `LISTEN/NOTIFY` in ≤3 days of engineering?"**
   - ✅ = yes, straightforward (append-only, OCC)
@@ -349,7 +349,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 3.6: Build the 26×5 matrix
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§3 matrix subsection)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§3 matrix subsection)
 
 - [ ] **Step 1: Consolidate the 4 competitor tables + DIY column + castore column (from §4) into one matrix: 26 rows × 6 columns (Feature, Castore, Emmett, ESDB, Marten, Equinox, DIY).**
   - Wait — that's 7 columns if Feature is a column. Use: Feature | Castore | Emmett | ESDB | Marten | Equinox | DIY.
@@ -359,7 +359,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 - [ ] **Step 3: Add a 1-paragraph "How to read this matrix" — explicitly state that "⚠️ via convention" is a cost not a feature, and that "🔶 first-party extension" means install an extra lib.**
 
 - [ ] **Step 4: Validate.**
-  - Run: `grep -c "^| F[0-9]\+" docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (assuming matrix rows begin `| F1 | ...`).
+  - Run: `grep -c "^| F[0-9]\+" specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (assuming matrix rows begin `| F1 | ...`).
   - Expected: `26`
 
 - [ ] **Step 5: Commit.**
@@ -378,7 +378,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 4.1: Identify gap candidates
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§5 preamble)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§5 preamble)
 
 - [ ] **Step 1: From §4, list every feature with status ❌ or ⚠️. This is your gap candidate set.**
 
@@ -393,7 +393,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 4.2: MUST gap entries
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§5 body)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§5 body)
 
 - [ ] **Step 0: Reconcile the pre-assigned gap IDs below against actual §4 audit findings BEFORE writing any entries.**
   - The IDs/priorities below (G-01 outbox MUST, G-02 snapshots MUST, etc.) are brainstorming hypotheses, not audit outcomes. Spec §6 risk-register protocol applies here too: hypotheses must be re-verified.
@@ -453,7 +453,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 4.6: Dependency DAG
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§5 trailing subsection)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§5 trailing subsection)
 
 - [ ] **Step 1: Apply spec §5 DAG edge criterion: `G-A → G-B` only if A cannot be designed/shipped until B's API/data model is decided.**
 
@@ -473,11 +473,11 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 4.7: Validate Chunk 4 acceptance
 
 - [ ] **Step 1: Count gap entries.**
-  - Run: `grep -c "^### G-" docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`
+  - Run: `grep -c "^### G-" specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`
   - Expected: between 10 and 15.
 
 - [ ] **Step 2: Every gap entry has Priority, Effort, Depends on, Design sketch, Alternatives considered, Why this priority?**
-  - Run: `grep -c "^Priority:" docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` — expected ≥10.
+  - Run: `grep -c "^Priority:" specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` — expected ≥10.
 
 - [ ] **Step 3: WON'T section present; DAG renders (no `graph TD` typos).**
 
@@ -492,7 +492,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 5.1: Verify R-01 — EventStore class extensibility
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§7)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§7)
 - Read-only: `packages/core/src/eventStore/eventStore.ts`
 
 - [ ] **Step 1: Read `eventStore.ts` end-to-end.**
@@ -536,7 +536,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 
 - [ ] **Step 2: Below the table, a "Dropped during verification" subsection listing any risk invalidated by audit evidence, with a 1-line reason each.**
 
-- [ ] **Step 3: Validate: `grep -c "^| R-" docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` ≥ 8 (allowing up to 4 to be dropped).**
+- [ ] **Step 3: Validate: `grep -c "^| R-" specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` ≥ 8 (allowing up to 4 to be dropped).**
 
 - [ ] **Step 4: Chunk commit.**
 
@@ -555,7 +555,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 6.2: Phase content
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§6)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§6)
 
 - [ ] **Step 1: Write Phase 0 (Fork cleanup & health audit) description per spec §6. Note this phase is **deferred** to separate brainstorming sub-projects — §6 merely lists what it contains.**
 
@@ -618,7 +618,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 ### Task 7.1: Appendices
 
 **Files:**
-- Modify: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md` (§8)
+- Modify: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (§8)
 
 - [ ] **Step 1: §8.1 "Upstream notes" — already populated in 2.6. Cross-reference.**
 
@@ -664,7 +664,7 @@ Tasks 2.1–2.5 reference this protocol by name. Do not improvise grep patterns 
 
 ### Task 7.4: Post-delivery handoff
 
-- [ ] **Step 1: Surface the deliverable to the user by path: `docs/superpowers/research/2026-04-16-castore-es-gap-analysis.md`.**
+- [ ] **Step 1: Surface the deliverable to the user by path: `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md`.**
 - [ ] **Step 2: Highlight: §6 opener (go/no-go), §5 gap catalogue (entry points for next brainstorming cycles), §7 risk register (what needs ongoing management).**
 - [ ] **Step 3: Remind user that this deliverable is a **decision input**, not a green light. Next step = user decides: proceed with fork (triggers per-MUST-gap brainstorming cycles) or pivot.**
 - [ ] **Step 4: Ask for an explicit go/no-go decision — do not close the session without one.**

@@ -14,7 +14,7 @@ document — its structure, methodology, competitor set, per-feature audit templ
 gap-entry template, prioritization framework and risk register format.
 
 The spec is the contract for the eventual deliverable
-`docs/superpowers/plans/<date>-castore-es-gap-analysis.md` (written later during the
+`specs/plans/<date>-<NNN>-castore-es-gap-analysis-plan.md` (written later during the
 `writing-plans` phase).
 
 ### Context established during brainstorming
@@ -408,7 +408,7 @@ The gap-analysis document is complete when:
 1. Spec review loop (`spec-document-reviewer` subagent). Up to 5 iterations, then escalate.
 2. User review of this spec.
 3. `writing-plans` skill produces the implementation plan for **this analysis document** (i.e. how we execute the research: which code to read in what order, which competitor docs to harvest, which gap entries to write first).
-4. Execution → deliverable `docs/superpowers/specs/2026-04-16-castore-es-gap-analysis.md` (or `…plans/`, per skill convention).
+4. Execution → deliverable `specs/requirements/2026-04-16-castore-es-gap-analysis-research.md` (or `…plans/`, per skill convention).
 5. After the analysis is delivered: decision point — fork and proceed (new brainstorming cycles per MUST gap), or pivot.
 
 ---

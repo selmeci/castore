@@ -3,7 +3,7 @@
 - **Date:** 2026-04-16
 - **Status:** Draft — complete, pending user review
 - **Owner:** Roman Selmeci
-- **Spec:** `docs/superpowers/specs/2026-04-16-castore-es-gap-analysis-design.md`
+- **Spec:** `specs/requirements/2026-04-16-castore-es-gap-analysis-requirements.md`
 
 ---
 
