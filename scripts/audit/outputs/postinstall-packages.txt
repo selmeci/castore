@@ -1,0 +1,69 @@
+# postinstall-packages.txt
+#
+# Enumeration of transitive dependencies with install-lifecycle scripts
+# (preinstall | install | postinstall) that pnpm 10 blocks by default.
+# Each entry must be explicitly allow-listed via `only-built-dependencies[]`
+# in the PR 2 root `.npmrc`, or the script stays blocked (safe default).
+#
+# Captured from the side-worktree `pnpm install`:
+#   cd ../castore-pnpm-audit
+#   find node_modules/.pnpm -name 'package.json' -path '*/node_modules/*/package.json' \
+#     | while read p; do jq -r 'select(.scripts.postinstall or .scripts.install or .scripts.preinstall) | ...' "$p"; done
+#
+# Legend:
+#   ALLOW  → add to only-built-dependencies[] in PR 2 .npmrc. Required for
+#            functionality (native binary, runtime polyfill init, etc.).
+#   SKIP   → intentionally leave blocked. Telemetry / advertising / legacy
+#            warnings — not required for correctness.
+#   TBD    → borderline; decide during PR 2 CI dry-run. Default SKIP.
+#
+# Format: <package>@<version>  <verdict>  <rationale>
+
+# ---- CRITICAL: build tooling & native binaries ----
+esbuild@0.25.12                            ALLOW   native binary download; vitest/vite require it to run
+esbuild@0.27.7                             ALLOW   same (duplicate; syncpack may align in Unit 4)
+@parcel/watcher@2.5.6                      ALLOW   native file watcher used transitively by chokidar/watch
+core-js@3.49.0                             ALLOW   runtime polyfill init (postinstall prints banner, harmless if blocked but noisy)
+core-js-pure@3.49.0                        ALLOW   same as core-js
+
+# ---- NATIVE BUILD (dependency-cruiser / nx parsers) ----
+tree-sitter@0.21.1                         ALLOW   node-gyp-build; used by dependency-cruiser AST parser
+tree-sitter@0.22.4                         ALLOW   same (dup from different transitive chain)
+tree-sitter-json@0.24.8                    ALLOW   AST parser for JSON in depcruise
+@tree-sitter-grammars/tree-sitter-yaml@0.7.1  ALLOW   AST parser for YAML in depcruise
+
+# ---- DEV/CI TOOLING ----
+nx@21.6.10                                 ALLOW   Nx's own post-install sets up local telemetry opt-out prompt
+husky@^9.1.7                               ALLOW   ROOT workspace package (not listed via transitive scan, but root
+                                                   postinstall calls `husky install` — always runs; does not need
+                                                   only-built-dependencies[] entry for pnpm 10 since it's a workspace dep)
+
+# ---- TRANSITIVE, HARMLESS IF BLOCKED ----
+protobufjs@7.5.5                           TBD     runs scripts/postinstall; decide at CI dry-run — usually safe to skip
+es5-ext@0.10.64                            TBD     prints deprecation banner; safe to SKIP (pnpm default)
+serverless@3.40.0                          SKIP    only transitive via nx telemetry; we don't invoke serverless CLI
+
+# ---- TELEMETRY / LEGACY WARNINGS ----
+@scarf/scarf@1.4.0                         SKIP    analytics beacon on install; intentionally blocked by pnpm 10 default
+aws-sdk@2.1693.0                           SKIP    prints v2 end-of-life warning; noise only
+
+# ---- SSH/NATIVE (transitive, verify if failures appear) ----
+cpu-features@0.0.10                        TBD     transitive via ssh2; only needed if we actually use ssh2 at runtime
+ssh2@1.17.0                                TBD     transitive — pnpm blocks; if any tooling needs it, bump to ALLOW
+ljharb-monorepo-symlink-test@0.0.0         SKIP    test fixture of a transitive; lerna bootstrap command won't run anyway
+
+# ---- PR 2 RECOMMENDED STARTING ALLOW-LIST ----
+# Paste into root .npmrc:
+#
+#   only-built-dependencies[]=esbuild
+#   only-built-dependencies[]=@parcel/watcher
+#   only-built-dependencies[]=core-js
+#   only-built-dependencies[]=core-js-pure
+#   only-built-dependencies[]=tree-sitter
+#   only-built-dependencies[]=tree-sitter-json
+#   only-built-dependencies[]=@tree-sitter-grammars/tree-sitter-yaml
+#   only-built-dependencies[]=nx
+#
+# Re-verify after PR 2 CI green: any package in TBD that causes runtime
+# errors should be promoted to ALLOW with a per-line CODEOWNERS-reviewed
+# justification (security-review gate).

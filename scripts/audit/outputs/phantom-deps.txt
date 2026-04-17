@@ -1,0 +1,108 @@
+# phantom-deps.txt
+#
+# Dependencies that source or built artifacts import but which are NOT declared
+# in the target package.json. Yarn 4's `nodeLinker: node-modules` hoists these
+# from the root workspace, masking the missing declarations. pnpm's strict
+# linker (with `shamefully-hoist=false`, the PR 2 default) exposes them.
+#
+# Format: <package-path>: <missing-dep> [type]
+#
+# Types:
+#   [dep]     → add to "dependencies"      (imported from src/** at runtime or shipped in dist/**)
+#   [peerDep] → add to "peerDependencies"  (consumer-supplied, e.g. react for a UI lib)
+#   [devDep]  → add to "devDependencies"   (used only by tests/tooling)
+#
+# Evidence columns:
+#   - Source scan:   grep of src/** import specifiers vs declared deps
+#   - Dist scan:     cross-reference of dist/**/*.{cjs,mjs,js,d.ts} external
+#                    imports vs declared deps + peerDeps (see scripts/audit/outputs/
+#                    /tmp/phantom-deps-dist-refined.txt)
+#   - tsc/vitest:    runtime errors during `pnpm -r package` / `pnpm -r test-type`
+#                    under pnpm 10 side-worktree (see /tmp/pnpm-*.log)
+#
+# Unit 3 applies these fixes mechanically to package.json. Unit 5 re-runs the
+# matrix to confirm all entries resolved.
+
+# ----------------------------------------------------------------------------
+# RUNTIME PHANTOM (shipped in dist/, consumers will break without it)
+# ----------------------------------------------------------------------------
+
+# @babel/runtime — every published package's dist/ imports helpers from
+# @babel/runtime/helpers/* (emitted by `@babel/plugin-transform-runtime` in
+# commonConfiguration/babel.config.js). Currently declared only in
+# packages/core and demo/blueprint.
+#
+# MUST be in "dependencies" (not devDependencies) — consumers pay the cost.
+packages/command-json-schema: @babel/runtime [dep]
+packages/command-zod: @babel/runtime [dep]
+packages/event-storage-adapter-dynamodb: @babel/runtime [dep]
+packages/event-storage-adapter-http: @babel/runtime [dep]
+packages/event-storage-adapter-in-memory: @babel/runtime [dep]
+packages/event-storage-adapter-postgres: @babel/runtime [dep]
+packages/event-storage-adapter-redux: @babel/runtime [dep]
+packages/event-type-json-schema: @babel/runtime [dep]
+packages/event-type-zod: @babel/runtime [dep]
+packages/lib-dam: @babel/runtime [dep]
+packages/lib-react-visualizer: @babel/runtime [dep]
+packages/lib-test-tools: @babel/runtime [dep]
+packages/message-bus-adapter-event-bridge: @babel/runtime [dep]
+packages/message-bus-adapter-event-bridge-s3: @babel/runtime [dep]
+packages/message-bus-adapter-in-memory: @babel/runtime [dep]
+packages/message-queue-adapter-in-memory: @babel/runtime [dep]
+packages/message-queue-adapter-sqs: @babel/runtime [dep]
+packages/message-queue-adapter-sqs-s3: @babel/runtime [dep]
+
+# ----------------------------------------------------------------------------
+# TYPE-LEAKAGE PHANTOM (transitively referenced in emitted .d.ts)
+# ----------------------------------------------------------------------------
+
+# lib-dam re-exports types from @castore/event-type-json-schema via
+# @castore/demo-blueprint. tsc emits TS2742 under pnpm strict layout because
+# the referenced types are not reachable from lib-dam's own node_modules tree.
+#
+# Evidence: packages/lib-dam/src/fixtures.test.ts — uses types inferred from
+# @castore/demo-blueprint exports which themselves reference
+# @castore/event-type-json-schema → json-schema-to-ts types.
+packages/lib-dam: @castore/event-type-json-schema [devDep]
+packages/lib-dam: json-schema-to-ts [devDep]
+
+# ----------------------------------------------------------------------------
+# TEST/DEV-TIME PHANTOM (imported in *.test.ts or type tests, hoisted by yarn)
+# ----------------------------------------------------------------------------
+
+# ts-toolbelt: used in type-level tests (expectTypeOf-style patterns).
+packages/lib-test-tools: ts-toolbelt [devDep]
+packages/message-bus-adapter-in-memory: ts-toolbelt [devDep]
+
+# @types/react: lib-react-visualizer tsx files import react but only
+# `react` itself is declared (in devDependencies). tsc reports TS7016
+# "Could not find a declaration file for module 'react'".
+# Note: `react` itself is imported at runtime (components), so it should
+# move to peerDependencies AS WELL — consumers supply their own React.
+packages/lib-react-visualizer: @types/react [devDep]
+packages/lib-react-visualizer: @types/react-dom [devDep]
+
+# Root tsconfig.json uses `types: ["node", "vitest/globals"]`. demo/blueprint
+# inherits this via tsconfig.build.json extends chain but has no vitest dep
+# of its own — TS2688 "Cannot find type definition file for 'vitest/globals'".
+# Discovered during Unit 5 verification pass.
+demo/blueprint: vitest [devDep]
+
+# ----------------------------------------------------------------------------
+# INVESTIGATE (not a clear phantom, but surfaced under pnpm's layout)
+# ----------------------------------------------------------------------------
+#
+# packages/lib-react-visualizer: TS2688 "Cannot find type definition file for
+# 'vitest/globals'". The root tsconfig.json has types:["node","vitest/globals"]
+# and vitest IS a devDep here. Under pnpm's deep symlink layout with
+# `preserveSymlinks: true` (set in the package's own tsconfig), the type
+# resolution fails. This is a tsconfig issue, not a phantom dep.
+# → Drop `preserveSymlinks: true` or set `typeRoots`, decide in PR 2.
+#
+# packages/lib-dam: a single dist/**.cjs.map (source map) references `~/types`
+# (unresolved path alias). Not a phantom dep — tsc-alias doesn't touch .map
+# files. Harmless but worth flagging for future build-config review.
+#
+# Several packages emit `from 'aws-lambda'` in dist .d.ts via type-only import.
+# `@types/aws-lambda` is already in devDependencies. No action required —
+# TS resolves `'aws-lambda'` → `@types/aws-lambda` via the types convention.
