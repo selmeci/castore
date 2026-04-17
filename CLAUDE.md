@@ -174,3 +174,7 @@ grepai trace graph "ValidateToken" --depth 3 --json
 3. Use `Read` tool to examine files from results
 4. Only use Grep for exact string searches if needed
 
+### Sub-agents
+
+This rule applies to delegated work as well. When spawning a sub-agent (Explore, general-purpose, Plan, deep-explore, feature-dev:*, etc.) for any intent-based code exploration, explicitly instruct it in the prompt to prefer `grepai search "<english intent>" --json --compact` over `Grep`/`Glob`, and to use `grepai trace` for call-graph questions. Sub-agents read this CLAUDE.md, but the default system prompt still biases them toward `Grep`/`Glob` — the explicit instruction in the delegation prompt is what makes the rule stick.
+
