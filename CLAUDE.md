@@ -57,7 +57,13 @@ Per-package (run from inside `packages/<name>` with `pnpm`, or target via Nx, e.
 - `pnpm test-linter` — `eslint .`. Use `pnpm lint-fix <path>` or `pnpm lint-fix-all` to autofix.
 - `pnpm test-circular` — dependency-cruiser for just this package.
 
-Commits are linted by commitlint (conventional commits) via a Husky hook installed by `postinstall`. Don't pass `--no-verify`.
+Commits are linted by commitlint (conventional commits) via a Husky hook installed by `postinstall`. Don't pass `--no-verify`. PR titles are validated by the same conventional-commits rules in CI (`amannn/action-semantic-pull-request`). Both commit messages and PR titles must use the same format:
+
+```
+type(scope): lowercase description
+```
+
+Allowed types: `feat`, `fix`, `build`, `chore`, `ci`, `docs`, `style`, `refactor`, `perf`, `test`, `revert`. The subject must start lowercase. Scope is optional but encouraged (typically a package name like `core`, `pnpm`, `docs`). Do **not** use types from other presets (e.g. `feature`, `update`, `new` from the beemo preset) — they will pass locally but fail CI, or vice-versa.
 
 `.npmrc` at the root sets `strict-peer-dependencies=true`, `auto-install-peers=false`, and a fail-closed `only-built-dependencies[]` allow-list. Any new package with an install/postinstall script must be added explicitly to that list (with justification) or it will be blocked.
 
