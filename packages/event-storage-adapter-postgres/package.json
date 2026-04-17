@@ -37,6 +37,7 @@
     "watch": "rm -rf dist && concurrently 'yarn:package-* --watch'"
   },
   "dependencies": {
+    "@babel/runtime": "^7.28.4",
     "postgres": "^3.4.7"
   },
   "devDependencies": {
