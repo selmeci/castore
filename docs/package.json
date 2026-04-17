@@ -51,6 +51,8 @@
   },
   "devDependencies": {
     "@docusaurus/module-type-aliases": "3.9.1",
+    "@docusaurus/plugin-content-docs": "3.9.1",
+    "@docusaurus/types": "3.9.1",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "@types/uuid": "^11.0.0",
@@ -58,6 +60,7 @@
     "dependency-cruiser": "^17.0.1",
     "eslint": "^9.36.0",
     "rollup-plugin-visualizer": "^6.0.3",
+    "search-insights": ">=1.0.0 <3.0.0-0",
     "typescript": "^5.9.2",
     "vite": "^7.1.6",
     "vite-plugin-svgr": "^4.5.0",

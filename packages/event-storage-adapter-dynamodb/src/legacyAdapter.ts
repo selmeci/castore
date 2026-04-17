@@ -149,7 +149,7 @@ export class LegacyDynamoDBEventStorageAdapter implements EventStorageAdapter {
     this.getTableName = () =>
       typeof this.tableName === 'string' ? this.tableName : this.tableName();
 
-    // eslint-disable-next-line complexity
+    /* eslint-disable complexity */
     this.getEvents = async (
       aggregateId,
       _,
@@ -331,7 +331,7 @@ export class LegacyDynamoDBEventStorageAdapter implements EventStorageAdapter {
     this.groupEvent = event =>
       new GroupedEvent({ event, eventStorageAdapter: this });
 
-    // eslint-disable-next-line complexity
+    /* eslint-disable complexity */
     this.listAggregateIds = async (
       _,
       { pageToken: inputPageToken, ...inputOptions } = {},

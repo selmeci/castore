@@ -47,7 +47,7 @@
     "@babel/preset-env": "^7.28.3",
     "@babel/preset-typescript": "^7.27.1",
     "@castore/core": "workspace:*",
-    "@reduxjs/toolkit": "^1.9.7",
+    "@reduxjs/toolkit": "^2.11.2",
     "@types/node": "^24.5.2",
     "babel-plugin-module-resolver": "^4.1.0",
     "concurrently": "^9.2.1",
@@ -83,8 +83,8 @@
   ],
   "peerDependencies": {
     "@castore/core": "*",
-    "@reduxjs/toolkit": "^1.9.0",
-    "react-redux": "^8.0.0"
+    "@reduxjs/toolkit": "^2.0.0",
+    "react-redux": "^9.0.0"
   },
   "type": "module"
 }

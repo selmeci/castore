@@ -160,7 +160,7 @@ export class DynamoDBSingleTableEventStorageAdapter
     this.getTableName = () =>
       typeof this.tableName === 'string' ? this.tableName : this.tableName();
 
-    // eslint-disable-next-line complexity
+    /* eslint-disable complexity */
     this.getEvents = async (
       aggregateId,
       { eventStoreId },
@@ -343,7 +343,7 @@ export class DynamoDBSingleTableEventStorageAdapter
     this.groupEvent = event =>
       new GroupedEvent({ event, eventStorageAdapter: this });
 
-    // eslint-disable-next-line complexity
+    /* eslint-disable complexity */
     this.listAggregateIds = async (
       { eventStoreId },
       { pageToken: inputPageToken, ...inputOptions } = {},
