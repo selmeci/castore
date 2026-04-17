@@ -15,6 +15,9 @@ import type {
 } from '@castore/core';
 
 import { DrizzleEventAlreadyExistsError } from '../common/error';
+import { makeParseGroupedEvents } from '../common/parseGroupedEvents';
+import { toIsoString } from '../common/toIsoString';
+import { walkErrorCauses } from '../common/walkErrorCauses';
 import type { PgEventTableContract } from './contract';
 
 export type ParsedPageToken = {
@@ -30,92 +33,6 @@ export type ParsedPageToken = {
     | undefined;
 };
 
-type DrizzlePgGroupedEvent = GroupedEvent & {
-  eventStorageAdapter: DrizzlePgEventStorageAdapter;
-};
-
-const hasDrizzlePgAdapter = (
-  groupedEvent: GroupedEvent,
-): groupedEvent is DrizzlePgGroupedEvent =>
-  groupedEvent.eventStorageAdapter instanceof DrizzlePgEventStorageAdapter;
-
-const hasContext = (
-  groupedEvent: GroupedEvent,
-): groupedEvent is GroupedEvent & {
-  context: NonNullable<GroupedEvent['context']>;
-} => groupedEvent.context !== undefined;
-
-/**
- * Port of the in-memory adapter's `parseGroupedEvents`:
- * - verifies every grouped event uses a DrizzlePgEventStorageAdapter
- * - verifies every grouped event carries `context`
- * - harmonizes timestamps across the group: any event without a timestamp
- *   inherits the group's shared timestamp; any mismatching timestamp throws
- */
-const parseGroupedEvents = (
-  ...groupedEventsInput: GroupedEvent[]
-): {
-  groupedEvents: (DrizzlePgGroupedEvent & {
-    context: NonNullable<GroupedEvent['context']>;
-  })[];
-  timestamp?: string;
-} => {
-  let timestampInfos:
-    | { timestamp: string; groupedEventIndex: number }
-    | undefined;
-  const groupedEvents: (DrizzlePgGroupedEvent & {
-    context: NonNullable<GroupedEvent['context']>;
-  })[] = [];
-
-  groupedEventsInput.forEach((groupedEvent, groupedEventIndex) => {
-    if (!hasDrizzlePgAdapter(groupedEvent)) {
-      throw new Error(
-        `Event group event #${groupedEventIndex} is not connected to a DrizzlePgEventStorageAdapter`,
-      );
-    }
-
-    if (!hasContext(groupedEvent)) {
-      throw new Error(`Event group event #${groupedEventIndex} misses context`);
-    }
-
-    if (
-      groupedEvent.event.timestamp !== undefined &&
-      timestampInfos === undefined
-    ) {
-      timestampInfos = {
-        timestamp: groupedEvent.event.timestamp,
-        groupedEventIndex,
-      };
-    }
-
-    groupedEvents.push(
-      groupedEvent as DrizzlePgGroupedEvent & {
-        context: NonNullable<GroupedEvent['context']>;
-      },
-    );
-  });
-
-  if (timestampInfos !== undefined) {
-    const _timestampInfos = timestampInfos;
-    groupedEvents.forEach((groupedEvent, groupedEventIndex) => {
-      if (groupedEvent.event.timestamp === undefined) {
-        groupedEvent.event.timestamp = _timestampInfos.timestamp;
-      } else if (groupedEvent.event.timestamp !== _timestampInfos.timestamp) {
-        throw new Error(
-          `Event group events #${groupedEventIndex} and #${_timestampInfos.groupedEventIndex} have different timestamps`,
-        );
-      }
-    });
-  }
-
-  return {
-    groupedEvents,
-    ...(timestampInfos !== undefined
-      ? { timestamp: timestampInfos.timestamp }
-      : {}),
-  };
-};
-
 type PgEventRow = {
   aggregate_name?: unknown;
   aggregate_id: unknown;
@@ -128,45 +45,12 @@ type PgEventRow = {
 
 type AnyPgDatabaseOrTx = PgDatabase<any, any, any>;
 
-const isDuplicateKeyError = (err: unknown): boolean => {
-  // Walk the error and any `.cause` / `.sourceError` / `.originalError`
-  // the driver may have placed the real pg error on. Drizzle 0.45 with
-  // postgres-js and node-postgres both surface `.code === '23505'` directly
-  // on the thrown object; the walk is defensive against driver upgrades
-  // that may one day wrap the error on a `.cause` chain.
-  let current: unknown = err;
-  const seen = new Set<unknown>();
-  while (current && typeof current === 'object' && !seen.has(current)) {
-    seen.add(current);
-    const code = (current as { code?: unknown }).code;
-    if (code === '23505') {
-      return true;
-    }
-    current =
-      (current as { cause?: unknown }).cause ??
-      (current as { sourceError?: unknown }).sourceError ??
-      (current as { originalError?: unknown }).originalError;
-  }
-
-  return false;
-};
-
-const toIsoString = (value: unknown): string => {
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  if (typeof value === 'string') {
-    // Some driver configurations return a TIMESTAMPTZ as an already-formatted
-    // string; normalise to ISO-8601.
-    const asDate = new Date(value);
-    if (!Number.isNaN(asDate.getTime())) {
-      return asDate.toISOString();
-    }
-
-    return value;
-  }
-  throw new Error(`Unexpected timestamp value: ${String(value)}`);
-};
+// pg SQLSTATE 23505 = unique_violation. Both `postgres-js` and `node-postgres`
+// surface `.code === '23505'` directly on the thrown error; the walk through
+// `cause`/`sourceError`/`originalError` is defensive against future Drizzle
+// versions that may wrap the driver error.
+const isDuplicateKeyError = (err: unknown): boolean =>
+  walkErrorCauses(err, node => (node as { code?: unknown }).code === '23505');
 
 export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
   private db: AnyPgDatabaseOrTx;
@@ -357,7 +241,10 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
     groupedEvent_0: GroupedEvent,
     ...rest: GroupedEvent[]
   ): Promise<{ eventGroup: { event: EventDetail }[] }> {
-    const { groupedEvents } = parseGroupedEvents(groupedEvent_0, ...rest);
+    const { groupedEvents } = parseDrizzlePgGroupedEvents(
+      groupedEvent_0,
+      ...rest,
+    );
 
     const results = await this.db.transaction(async tx => {
       const inner: { event: EventDetail }[] = [];
@@ -499,3 +386,16 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
     };
   }
 }
+
+/**
+ * Class-bound `parseGroupedEvents` — enforces that every grouped event's
+ * storage adapter is a `DrizzlePgEventStorageAdapter` (R13), plus the
+ * context + timestamp-coherence checks shared across all dialects.
+ *
+ * Declared after the class so the `instanceof` check closes over the final
+ * class reference (avoids TDZ hazards in the hoisted declaration).
+ */
+const parseDrizzlePgGroupedEvents = makeParseGroupedEvents(
+  DrizzlePgEventStorageAdapter,
+  'DrizzlePgEventStorageAdapter',
+);

@@ -30,4 +30,21 @@ export default [
       '@typescript-eslint/strict-boolean-expressions': 'off',
     },
   },
+  // The shared conformance suite under src/__tests__/ is a plain `.ts` file
+  // (not `.unit.test.ts` — vitest mustn't pick it up directly), but it is
+  // test-support code, not shipped source. Treat it like tests for the
+  // devDependencies rule so it can import `lodash.omit`, testcontainers, etc.
+  {
+    files: ['**/src/__tests__/**/*.{ts,tsx}'],
+    rules: {
+      'import/no-extraneous-dependencies': [
+        'error',
+        {
+          devDependencies: true,
+          optionalDependencies: false,
+          peerDependencies: true,
+        },
+      ],
+    },
+  },
 ];
