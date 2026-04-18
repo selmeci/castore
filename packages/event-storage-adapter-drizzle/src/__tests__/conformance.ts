@@ -126,6 +126,60 @@ export const makeAdapterConformanceSuite = <A extends EventStorageAdapter>(
         expect(typed.cause).toBeDefined();
       });
 
+      it('round-trips falsy JSON payloads (0, false, empty string)', async () => {
+        const aggregateIdFalse = `${aggregateIdMock1}-false`;
+        const aggregateIdZero = `${aggregateIdMock1}-zero`;
+        const aggregateIdEmpty = `${aggregateIdMock1}-empty`;
+
+        await adapterA.pushEvent(
+          {
+            aggregateId: aggregateIdFalse,
+            version: 1,
+            type: 'EVENT_TYPE',
+            payload: false,
+            timestamp: '2021-01-01T00:00:00.000Z',
+          },
+          { eventStoreId },
+        );
+        await adapterA.pushEvent(
+          {
+            aggregateId: aggregateIdZero,
+            version: 1,
+            type: 'EVENT_TYPE',
+            payload: 0,
+            timestamp: '2021-01-01T00:00:00.000Z',
+          },
+          { eventStoreId },
+        );
+        await adapterA.pushEvent(
+          {
+            aggregateId: aggregateIdEmpty,
+            version: 1,
+            type: 'EVENT_TYPE',
+            payload: '',
+            timestamp: '2021-01-01T00:00:00.000Z',
+          },
+          { eventStoreId },
+        );
+
+        const { events: falseEvents } = await adapterA.getEvents(
+          aggregateIdFalse,
+          { eventStoreId },
+        );
+        const { events: zeroEvents } = await adapterA.getEvents(
+          aggregateIdZero,
+          { eventStoreId },
+        );
+        const { events: emptyEvents } = await adapterA.getEvents(
+          aggregateIdEmpty,
+          { eventStoreId },
+        );
+
+        expect(falseEvents[0]?.payload).toBe(false);
+        expect(zeroEvents[0]?.payload).toBe(0);
+        expect(emptyEvents[0]?.payload).toBe('');
+      });
+
       it('overrides event if force option is set to true', async () => {
         const { event } = await adapterA.pushEvent(eventMock1, {
           eventStoreId,

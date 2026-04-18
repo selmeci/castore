@@ -34,7 +34,6 @@ export type ParsedPageToken = {
 };
 
 type PgEventRow = {
-  aggregate_name?: unknown;
   aggregate_id: unknown;
   version: unknown;
   type: unknown;
@@ -76,10 +75,12 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
       metadata: row.metadata as unknown | null,
       timestamp: toIsoString(row.timestamp),
     };
-    if (!eventDetail.payload) {
+    // Drop only when the DB stored SQL NULL. Falsy JSON values (`false`,
+    // `0`, `''`) are legal payloads and must round-trip through the adapter.
+    if (eventDetail.payload === null || eventDetail.payload === undefined) {
       delete (eventDetail as { payload?: unknown }).payload;
     }
-    if (!eventDetail.metadata) {
+    if (eventDetail.metadata === null || eventDetail.metadata === undefined) {
       delete (eventDetail as { metadata?: unknown }).metadata;
     }
 
@@ -371,11 +372,15 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
 
     const hasNextPage = limit === undefined ? false : remainingCount > limit;
 
+    // Emit the *resolved* values (options ?? prev-token) so page-3+ tokens
+    // retain limit/initialEvent*/reverse when the caller supplied them only
+    // in the first call. The previous `options?.limit` path lost those on
+    // every hop past the first page.
     const parsedNextPageToken: ParsedPageToken = {
-      limit: options?.limit,
-      initialEventAfter: options?.initialEventAfter,
-      initialEventBefore: options?.initialEventBefore,
-      reverse: options?.reverse,
+      limit,
+      initialEventAfter,
+      initialEventBefore,
+      reverse,
       lastEvaluatedKey: aggregateIds.at(-1),
     };
 

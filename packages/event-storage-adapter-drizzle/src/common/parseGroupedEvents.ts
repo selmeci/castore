@@ -70,7 +70,14 @@ export const makeParseGroupedEvents = <A>(
         };
       }
 
-      groupedEvents.push(groupedEvent as GroupedEventWithContext<A>);
+      // Clone the event before pushing so the downstream timestamp-fill
+      // step does not mutate the caller's object. The caller may retry a
+      // pushEventGroup after a failure; their original event payload must
+      // not carry a timestamp assigned from a prior attempt.
+      groupedEvents.push({
+        ...groupedEvent,
+        event: { ...groupedEvent.event },
+      } as GroupedEventWithContext<A>);
     });
 
     if (timestampInfos !== undefined) {

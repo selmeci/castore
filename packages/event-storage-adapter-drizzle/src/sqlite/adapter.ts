@@ -49,19 +49,17 @@ type AnySQLiteDatabaseOrTx = BaseSQLiteDatabase<
   any
 >;
 
-// Both `better-sqlite3` and `@libsql/client` surface unique-constraint
-// violations as errors whose `.code` is either `SQLITE_CONSTRAINT_UNIQUE`
-// (the extended result code, present on the root `SqliteError` from
-// better-sqlite3 and on libsql's `.cause`) or the parent `SQLITE_CONSTRAINT`
-// (libsql's top-level `LibsqlError` uses this coarser code). The walk through
-// `cause` / `sourceError` / `originalError` handles Drizzle's occasional
-// `DrizzleQueryError` wrapping as well.
+// Only accept the extended SQLITE_CONSTRAINT_UNIQUE code. better-sqlite3
+// sets it directly on the root `SqliteError`. libsql sets the generic
+// parent `SQLITE_CONSTRAINT` on its top-level `LibsqlError` but places the
+// specific code on `.cause` — `walkErrorCauses` traverses into it. Matching
+// only the UNIQUE code avoids misclassifying NOT NULL / CHECK / FK
+// violations on user-extended tables as EventAlreadyExistsError.
 const isDuplicateKeyError = (err: unknown): boolean =>
-  walkErrorCauses(err, node => {
-    const code = (node as { code?: unknown }).code;
-
-    return code === 'SQLITE_CONSTRAINT_UNIQUE' || code === 'SQLITE_CONSTRAINT';
-  });
+  walkErrorCauses(
+    err,
+    node => (node as { code?: unknown }).code === 'SQLITE_CONSTRAINT_UNIQUE',
+  );
 
 export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
   private db: AnySQLiteDatabaseOrTx;
@@ -90,10 +88,12 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
       metadata: row.metadata as unknown | null,
       timestamp: toIsoString(row.timestamp),
     };
-    if (!eventDetail.payload) {
+    // Drop only when the DB stored SQL NULL. Falsy JSON values (`false`,
+    // `0`, `''`) are legal payloads and must round-trip through the adapter.
+    if (eventDetail.payload === null || eventDetail.payload === undefined) {
       delete (eventDetail as { payload?: unknown }).payload;
     }
-    if (!eventDetail.metadata) {
+    if (eventDetail.metadata === null || eventDetail.metadata === undefined) {
       delete (eventDetail as { metadata?: unknown }).metadata;
     }
 
@@ -123,24 +123,19 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
     return values;
   }
 
-  private buildForceUpdateSet(
-    event: OptionalTimestamp<EventDetail>,
-  ): Record<string, unknown> {
-    // SQLite 3.35+ supports `INSERT ... ON CONFLICT ... DO UPDATE` with the
-    // `excluded` pseudo-table. Both lowercase and uppercase are accepted by
-    // SQLite's parser; we use lowercase because that's the form in the
-    // official docs.
-    const set: Record<string, unknown> = {
+  private buildForceUpdateSet(): Record<string, unknown> {
+    // `excluded.<col>` (SQLite 3.35+) references the would-be-inserted value
+    // for each column, including the schema's `$defaultFn`-generated
+    // timestamp when the caller did not supply one. Using `excluded.*`
+    // unconditionally keeps the update consistent with the insert's view
+    // of the row — no application-space `new Date()` drift between force
+    // updates in the same group.
+    return {
       type: sql`excluded.type`,
       payload: sql`excluded.payload`,
       metadata: sql`excluded.metadata`,
+      timestamp: sql`excluded.timestamp`,
     };
-    set.timestamp =
-      event.timestamp !== undefined
-        ? sql`excluded.timestamp`
-        : sql`${new Date().toISOString()}`;
-
-    return set;
   }
 
   private selectColumns() {
@@ -174,7 +169,7 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
               this.eventTable.aggregateId,
               this.eventTable.version,
             ],
-            set: this.buildForceUpdateSet(event),
+            set: this.buildForceUpdateSet(),
           })
           .returning({
             aggregate_id: this.eventTable.aggregateId,
@@ -412,11 +407,14 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
 
     const hasNextPage = limit === undefined ? false : remainingCount > limit;
 
+    // Emit the *resolved* values (options ?? prev-token) so page-3+ tokens
+    // retain limit/initialEvent*/reverse when the caller supplied them only
+    // in the first call.
     const parsedNextPageToken: ParsedPageToken = {
-      limit: options?.limit,
-      initialEventAfter: options?.initialEventAfter,
-      initialEventBefore: options?.initialEventBefore,
-      reverse: options?.reverse,
+      limit,
+      initialEventAfter,
+      initialEventBefore,
+      reverse,
       lastEvaluatedKey: aggregateIds.at(-1),
     };
 
