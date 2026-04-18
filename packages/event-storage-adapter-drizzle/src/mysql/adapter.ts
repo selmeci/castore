@@ -167,6 +167,7 @@ export class DrizzleMysqlEventStorageAdapter implements EventStorageAdapter {
           eventStoreId: options.eventStoreId,
           aggregateId,
           version,
+          cause: err,
         });
       }
       throw err;

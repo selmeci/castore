@@ -122,6 +122,8 @@ export const makeAdapterConformanceSuite = <A extends EventStorageAdapter>(
         expect(typed.eventStoreId).toBe(eventStoreId);
         expect(typed.aggregateId).toBe(aggregateIdMock1);
         expect(typed.version).toBe(1);
+        // Original driver error is preserved on `.cause` for triage.
+        expect(typed.cause).toBeDefined();
       });
 
       it('overrides event if force option is set to true', async () => {

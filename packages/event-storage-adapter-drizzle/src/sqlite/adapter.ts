@@ -200,6 +200,7 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
           eventStoreId: options.eventStoreId,
           aggregateId,
           version,
+          cause: err,
         });
       }
       throw err;
@@ -296,8 +297,16 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
     } catch (err) {
       try {
         await this.db.run(sql`ROLLBACK`);
-      } catch {
-        // Ignore rollback errors — the original error is what matters.
+      } catch (rollbackErr) {
+        // Surface rollback failures to stderr so production triage can spot
+        // a connection stuck mid-transaction. The original error is still
+        // what the caller receives, but a failed ROLLBACK means the `db`
+        // handle's transaction state is undefined — callers should treat
+        // it as suspect and obtain a fresh connection.
+        console.error(
+          '[DrizzleSqliteEventStorageAdapter] ROLLBACK failed; connection state is undefined:',
+          rollbackErr,
+        );
       }
       throw err;
     }

@@ -14,13 +14,20 @@ export class DrizzleEventAlreadyExistsError
     eventStoreId = '',
     aggregateId,
     version,
+    cause,
   }: {
     eventStoreId?: string;
     aggregateId: string;
     version: number;
+    cause?: unknown;
   }) {
+    // Forward the original driver error as `cause` so production triage
+    // retains the full DrizzleQueryError + underlying driver stack. The
+    // public contract is the `code` / `eventStoreId` / `aggregateId` /
+    // `version` fields; callers should treat `cause` as opaque debug data.
     super(
       `Event already exists for ${eventStoreId} aggregate ${aggregateId} and version ${version}`,
+      cause !== undefined ? { cause } : undefined,
     );
 
     this.code = eventAlreadyExistsErrorCode;

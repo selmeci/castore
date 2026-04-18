@@ -21,8 +21,11 @@ export const toIsoString = (value: unknown): string => {
     if (!Number.isNaN(asDate.getTime())) {
       return asDate.toISOString();
     }
-
-    return value;
+    // Throw rather than return the unparsed string: a malformed timestamp
+    // would silently corrupt listAggregateIds page-token ordering (which
+    // relies on lexicographic = chronological comparison of ISO strings).
+    // Surfacing the bad value here makes integration failures loud.
+    throw new Error(`Unparseable timestamp string: ${value}`);
   }
   throw new Error(`Unexpected timestamp value: ${String(value)}`);
 };
