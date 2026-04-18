@@ -36,6 +36,7 @@ Castore is a pnpm + Nx monorepo of TypeScript packages for event sourcing. Works
 - `packages/lib-*` — side libraries (`lib-dam` data-access/migration utils, `lib-react-visualizer` UI, `lib-test-tools`).
 - `demo/{blueprint,implementation,visualization}` — runnable demos that exercise the packages end-to-end.
 - `docs` — Docusaurus site under `docs/docs/` (installation, event sourcing concepts, reacting-to-events, migration guides).
+- `docs/solutions/` — documented solutions to past problems (bugs, best practices, tooling gotchas), organized by category (`integration-issues/`, `developer-experience/`, `best-practices/`, etc.) with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
 - `commonConfiguration/{babel.config.js,vite.config.js}` — shared build/test configs consumed by every package.
 - `scripts/setPackagesVersions.ts` — release helper invoked via `pnpm set-packages-versions`.
 
