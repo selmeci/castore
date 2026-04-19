@@ -24,6 +24,37 @@ export type ConformanceSetup<A extends EventStorageAdapter> = {
 };
 
 /**
+ * Drains `listAggregateIds` across every page and returns the aggregateIds in
+ * visitation order. Kept at module scope so the per-test arrow function stays
+ * under the ESLint complexity cap.
+ */
+const walkAllPages = async <A extends EventStorageAdapter>(
+  adapter: A,
+  eventStoreId: string,
+  firstOptions: { limit: number; reverse?: boolean },
+): Promise<string[]> => {
+  const collected: string[] = [];
+  let pageToken: string | undefined;
+  let safety = 0;
+  do {
+    const { aggregateIds, nextPageToken } = await adapter.listAggregateIds(
+      { eventStoreId },
+      pageToken === undefined ? firstOptions : { pageToken },
+    );
+    for (const { aggregateId } of aggregateIds) {
+      collected.push(aggregateId);
+    }
+    pageToken = nextPageToken;
+    safety += 1;
+    if (safety > 10) {
+      throw new Error('pagination did not terminate');
+    }
+  } while (pageToken !== undefined);
+
+  return collected;
+};
+
+/**
  * Dialect-agnostic conformance suite. Every scenario here must pass byte-
  * identically against pg, mysql, and sqlite adapters — that is the guarantee
  * R17 / R18 demand.
@@ -350,6 +381,49 @@ export const makeAdapterConformanceSuite = <A extends EventStorageAdapter>(
             },
           ],
         });
+      });
+
+      it('paginates stably when aggregates share an initial timestamp', async () => {
+        // All four version-1 events share the same millisecond. With a
+        // timestamp-only cursor the second page would drop any rows whose
+        // timestamp equals the cursor. A composite (timestamp, aggregateId)
+        // cursor + ordering must enumerate every aggregate exactly once.
+        const sharedTimestamp = '2025-06-01T12:00:00.000Z';
+        const sharedIds = [
+          aggregateIdMock1,
+          aggregateIdMock2,
+          aggregateIdMock3,
+          aggregateIdMock4,
+        ];
+
+        for (const aggregateId of sharedIds) {
+          await adapterA.pushEvent(
+            {
+              aggregateId,
+              version: 1,
+              type: 'EVENT_TYPE',
+              timestamp: sharedTimestamp,
+            },
+            { eventStoreId },
+          );
+        }
+
+        // Forward walk: every aggregate must appear exactly once.
+        const forwardCollected = await walkAllPages(adapterA, eventStoreId, {
+          limit: 2,
+        });
+        expect(forwardCollected).toHaveLength(sharedIds.length);
+        expect(new Set(forwardCollected)).toStrictEqual(new Set(sharedIds));
+
+        // Reverse walk must behave symmetrically — same set, no drops or
+        // duplicates when the secondary sort key is flipped alongside the
+        // primary one.
+        const reverseCollected = await walkAllPages(adapterA, eventStoreId, {
+          limit: 2,
+          reverse: true,
+        });
+        expect(reverseCollected).toHaveLength(sharedIds.length);
+        expect(new Set(reverseCollected)).toStrictEqual(new Set(sharedIds));
       });
 
       it('applies listAggregateIds options', async () => {

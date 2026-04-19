@@ -9,7 +9,7 @@
     "noUncheckedIndexedAccess": true,
     "paths": {
       "~/*": ["*"],
-      "pg": ["../node_modules/@types/pg/index.d.ts"]
+      "pg": ["../node_modules/@types/pg"]
     }
   },
   "exclude": ["./dist"],

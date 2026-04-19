@@ -136,6 +136,7 @@ walkErrorCauses(
 **Raw `BEGIN`/`COMMIT`/`ROLLBACK`** bypasses driver-specific transaction-callback semantics entirely. Both better-sqlite3 and libsql accept these statements verbatim. The `db.run(sql\`...\`)` return value is discarded; `await` handles the async case transparently.
 
 **`walkErrorCauses`** handles every observed wrap shape:
+
 | Driver | Root error | Duplicate key signal |
 |---|---|---|
 | postgres-js | `DrizzleQueryError` | `.code === '23505'` on `.cause` |

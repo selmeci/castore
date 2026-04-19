@@ -20,7 +20,12 @@ export const walkErrorCauses = (
 ): boolean => {
   let current: unknown = err;
   const seen = new Set<unknown>();
-  while (current && typeof current === 'object' && !seen.has(current)) {
+  while (
+    current !== null &&
+    current !== undefined &&
+    typeof current === 'object' &&
+    !seen.has(current)
+  ) {
     seen.add(current);
     if (predicate(current)) {
       return true;

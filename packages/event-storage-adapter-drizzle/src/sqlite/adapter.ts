@@ -1,5 +1,4 @@
-/* eslint-disable complexity */
-import { and, asc, desc, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, sql } from 'drizzle-orm';
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 
 import { GroupedEvent } from '@castore/core';
@@ -15,32 +14,22 @@ import type {
 } from '@castore/core';
 
 import { DrizzleEventAlreadyExistsError } from '../common/error';
+import type { DrizzleEventRow } from '../common/eventDetail';
+import { buildEventDetail } from '../common/eventDetail';
+import {
+  buildGetEventsFilters,
+  buildGetEventsOrder,
+} from '../common/getEvents';
+import {
+  buildBaseFilters,
+  buildCursorPredicate,
+  buildListAggregateIdsOutput,
+  buildOrderBy,
+} from '../common/listAggregateIds';
+import { parsePageToken } from '../common/pageToken';
 import { makeParseGroupedEvents } from '../common/parseGroupedEvents';
-import { toIsoString } from '../common/toIsoString';
 import { walkErrorCauses } from '../common/walkErrorCauses';
 import type { SqliteEventTableContract } from './contract';
-
-export type ParsedPageToken = {
-  limit?: number;
-  initialEventAfter?: string | undefined;
-  initialEventBefore?: string | undefined;
-  reverse?: boolean | undefined;
-  lastEvaluatedKey?:
-    | {
-        aggregateId: string;
-        initialEventTimestamp: string;
-      }
-    | undefined;
-};
-
-type SqliteEventRow = {
-  aggregate_id: unknown;
-  version: unknown;
-  type: unknown;
-  payload: unknown;
-  metadata: unknown;
-  timestamp: unknown;
-};
 
 type AnySQLiteDatabaseOrTx = BaseSQLiteDatabase<
   'sync' | 'async',
@@ -61,9 +50,25 @@ const isDuplicateKeyError = (err: unknown): boolean =>
     node => (node as { code?: unknown }).code === 'SQLITE_CONSTRAINT_UNIQUE',
   );
 
+// SQLite stores timestamps as fixed-width ISO-8601 strings, so lexicographic
+// comparison matches chronological order — pass the ISO string directly.
+// SQLite drivers reject `Date` instances as bind parameters.
+const coerceSqliteTimestamp = (iso: string): string => iso;
+
 export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
   private db: AnySQLiteDatabaseOrTx;
   private eventTable: SqliteEventTableContract;
+
+  // Serializes `pushEventGroup` calls on this adapter instance. SQLite does
+  // not nest transactions on a single shared handle, and this adapter wraps
+  // the group in raw `BEGIN` / `COMMIT` statements on `this.db` — so two
+  // overlapping callers would both enter `BEGIN` and corrupt transaction
+  // state. pg/mysql do not need this: Drizzle's `db.transaction()` pulls a
+  // dedicated connection from the pool per call. `.then(run, run)` chains
+  // the next call regardless of the previous result, so a rejected prior
+  // call never poisons later ones; `.catch` on the stored queue swallows
+  // the rejection so the chain stays alive.
+  private pushEventGroupQueue: Promise<unknown> = Promise.resolve();
 
   constructor({
     db,
@@ -74,30 +79,6 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
   }) {
     this.db = db;
     this.eventTable = eventTable;
-  }
-
-  private toEventDetail(row: SqliteEventRow): EventDetail {
-    const eventDetail = {
-      aggregateId: row.aggregate_id as string,
-      version: Number(row.version),
-      type: row.type as string,
-      // `text(..., { mode: 'json' }).$type<unknown>()` makes Drizzle parse /
-      // stringify JSON transparently, so `row.payload` / `row.metadata` are
-      // already JS values here, not JSON strings.
-      payload: row.payload as unknown | null,
-      metadata: row.metadata as unknown | null,
-      timestamp: toIsoString(row.timestamp),
-    };
-    // Drop only when the DB stored SQL NULL. Falsy JSON values (`false`,
-    // `0`, `''`) are legal payloads and must round-trip through the adapter.
-    if (eventDetail.payload === null || eventDetail.payload === undefined) {
-      delete (eventDetail as { payload?: unknown }).payload;
-    }
-    if (eventDetail.metadata === null || eventDetail.metadata === undefined) {
-      delete (eventDetail as { metadata?: unknown }).metadata;
-    }
-
-    return eventDetail as EventDetail;
   }
 
   private buildInsertValues(
@@ -157,9 +138,9 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
     const { aggregateId, version } = event;
     const values = this.buildInsertValues(options.eventStoreId, event);
 
-    let res: SqliteEventRow[];
+    let res: DrizzleEventRow[];
     try {
-      if (options.force) {
+      if (options.force === true) {
         res = (await tx
           .insert(this.eventTable)
           .values(values)
@@ -171,23 +152,12 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
             ],
             set: this.buildForceUpdateSet(),
           })
-          .returning({
-            aggregate_id: this.eventTable.aggregateId,
-            version: this.eventTable.version,
-            type: this.eventTable.type,
-            payload: this.eventTable.payload,
-            metadata: this.eventTable.metadata,
-            timestamp: this.eventTable.timestamp,
-          })) as SqliteEventRow[];
+          .returning(this.selectColumns())) as DrizzleEventRow[];
       } else {
-        res = (await tx.insert(this.eventTable).values(values).returning({
-          aggregate_id: this.eventTable.aggregateId,
-          version: this.eventTable.version,
-          type: this.eventTable.type,
-          payload: this.eventTable.payload,
-          metadata: this.eventTable.metadata,
-          timestamp: this.eventTable.timestamp,
-        })) as SqliteEventRow[];
+        res = (await tx
+          .insert(this.eventTable)
+          .values(values)
+          .returning(this.selectColumns())) as DrizzleEventRow[];
       }
     } catch (err) {
       if (isDuplicateKeyError(err)) {
@@ -206,7 +176,7 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
       throw new Error('Failed to insert event');
     }
 
-    return { event: this.toEventDetail(insertedEvent) };
+    return { event: buildEventDetail(insertedEvent) };
   }
 
   async pushEvent(
@@ -221,35 +191,29 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
     context: EventStoreContext,
     options?: EventsQueryOptions,
   ): Promise<{ events: EventDetail[] }> {
-    const filters = [
-      eq(this.eventTable.aggregateName, context.eventStoreId),
-      eq(this.eventTable.aggregateId, aggregateId),
-    ];
-
-    if (options?.minVersion !== undefined) {
-      filters.push(sql`${this.eventTable.version} >= ${options.minVersion}`);
-    }
-    if (options?.maxVersion !== undefined) {
-      filters.push(sql`${this.eventTable.version} <= ${options.maxVersion}`);
-    }
-
-    const order = options?.reverse
-      ? desc(this.eventTable.version)
-      : asc(this.eventTable.version);
+    const filters = buildGetEventsFilters({
+      aggregateNameColumn: this.eventTable.aggregateName,
+      aggregateIdColumn: this.eventTable.aggregateId,
+      versionColumn: this.eventTable.version,
+      eventStoreId: context.eventStoreId,
+      aggregateId,
+      minVersion: options?.minVersion,
+      maxVersion: options?.maxVersion,
+    });
 
     const baseQuery = this.db
       .select(this.selectColumns())
       .from(this.eventTable)
       .where(and(...filters))
-      .orderBy(order);
+      .orderBy(buildGetEventsOrder(this.eventTable.version, options));
 
     const query =
       options?.limit !== undefined ? baseQuery.limit(options.limit) : baseQuery;
 
-    const rows = (await query) as SqliteEventRow[];
+    const rows = (await query) as DrizzleEventRow[];
 
     return {
-      events: rows.map(row => this.toEventDetail(row)),
+      events: rows.map(row => buildEventDetail(row)),
     };
   }
 
@@ -271,71 +235,51 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
     // is itself async. `db.run()` returns the driver result directly on
     // better-sqlite3 (non-thenable) and a Promise on libsql; `await` is a
     // no-op on the former and resolves the latter.
-    await this.db.run(sql`BEGIN`);
-    try {
-      const inner: { event: EventDetail }[] = [];
-      for (const groupedEvent of groupedEvents) {
-        const {
-          eventStorageAdapter: groupedAdapter,
-          event,
-          context,
-        } = groupedEvent;
-        const response = await groupedAdapter.pushEventInTx(this.db, event, {
-          eventStoreId: context.eventStoreId,
-          force: options.force,
-        });
-        inner.push(response);
-      }
-      await this.db.run(sql`COMMIT`);
-
-      return { eventGroup: inner };
-    } catch (err) {
+    const run = async (): Promise<{ eventGroup: { event: EventDetail }[] }> => {
+      await this.db.run(sql`BEGIN`);
       try {
-        await this.db.run(sql`ROLLBACK`);
-      } catch (rollbackErr) {
-        // Surface rollback failures to stderr so production triage can spot
-        // a connection stuck mid-transaction. The original error is still
-        // what the caller receives, but a failed ROLLBACK means the `db`
-        // handle's transaction state is undefined — callers should treat
-        // it as suspect and obtain a fresh connection.
-        console.error(
-          '[DrizzleSqliteEventStorageAdapter] ROLLBACK failed; connection state is undefined:',
-          rollbackErr,
-        );
+        const inner: { event: EventDetail }[] = [];
+        for (const groupedEvent of groupedEvents) {
+          const {
+            eventStorageAdapter: groupedAdapter,
+            event,
+            context,
+          } = groupedEvent;
+          const response = await groupedAdapter.pushEventInTx(this.db, event, {
+            eventStoreId: context.eventStoreId,
+            force: options.force,
+          });
+          inner.push(response);
+        }
+        await this.db.run(sql`COMMIT`);
+
+        return { eventGroup: inner };
+      } catch (err) {
+        try {
+          await this.db.run(sql`ROLLBACK`);
+        } catch (rollbackErr) {
+          // Surface rollback failures to stderr so production triage can
+          // spot a connection stuck mid-transaction. The original error is
+          // still what the caller receives, but a failed ROLLBACK means
+          // the `db` handle's transaction state is undefined — callers
+          // should treat it as suspect and obtain a fresh connection.
+          console.error(
+            '[DrizzleSqliteEventStorageAdapter] ROLLBACK failed; connection state is undefined:',
+            rollbackErr,
+          );
+        }
+        throw err;
       }
-      throw err;
-    }
+    };
+
+    const result = this.pushEventGroupQueue.then(run, run);
+    this.pushEventGroupQueue = result.catch(() => undefined);
+
+    return result;
   }
 
   groupEvent(eventDetail: OptionalTimestamp<EventDetail>): GroupedEvent {
     return new GroupedEvent({ event: eventDetail, eventStorageAdapter: this });
-  }
-
-  private parseInputs({
-    inputOptions,
-  }: {
-    inputOptions: ListAggregateIdsOptions | undefined;
-  }) {
-    let pageTokenParsed: ParsedPageToken = {};
-
-    if (typeof inputOptions?.pageToken === 'string') {
-      try {
-        pageTokenParsed = JSON.parse(inputOptions.pageToken) as ParsedPageToken;
-      } catch (error) {
-        console.error(error);
-        throw new Error('Invalid page token');
-      }
-    }
-
-    return {
-      limit: pageTokenParsed.limit ?? inputOptions?.limit,
-      initialEventAfter:
-        pageTokenParsed.initialEventAfter ?? inputOptions?.initialEventAfter,
-      initialEventBefore:
-        pageTokenParsed.initialEventBefore ?? inputOptions?.initialEventBefore,
-      reverse: pageTokenParsed.reverse ?? inputOptions?.reverse,
-      lastEvaluatedKey: pageTokenParsed.lastEvaluatedKey,
-    };
   }
 
   async listAggregateIds(
@@ -348,42 +292,40 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
       initialEventBefore,
       reverse,
       lastEvaluatedKey,
-    } = this.parseInputs({ inputOptions: options });
+    } = parsePageToken(options);
 
     // Two-query approach (matches pg / mysql). SQLite stores timestamps as
     // fixed-width ISO-8601 strings, so lexicographic comparison matches
     // chronological order — pass the ISO string directly, no `new Date(...)`
     // (SQLite drivers reject `Date` instances as bind parameters).
-    const baseFilters = [
-      eq(this.eventTable.aggregateName, context.eventStoreId),
-      eq(this.eventTable.version, 1),
-    ];
-    if (initialEventAfter !== undefined) {
-      baseFilters.push(gt(this.eventTable.timestamp, initialEventAfter));
-    }
-    if (initialEventBefore !== undefined) {
-      baseFilters.push(lt(this.eventTable.timestamp, initialEventBefore));
-    }
+    const baseFilters = buildBaseFilters({
+      aggregateNameColumn: this.eventTable.aggregateName,
+      versionColumn: this.eventTable.version,
+      timestampColumn: this.eventTable.timestamp,
+      eventStoreId: context.eventStoreId,
+      initialEventAfter,
+      initialEventBefore,
+      coerceTimestamp: coerceSqliteTimestamp,
+    });
 
-    const pageFilters = [...baseFilters];
-    if (lastEvaluatedKey?.initialEventTimestamp !== undefined) {
-      const cursor = lastEvaluatedKey.initialEventTimestamp;
-      pageFilters.push(
-        reverse
-          ? lt(this.eventTable.timestamp, cursor)
-          : gt(this.eventTable.timestamp, cursor),
-      );
-    }
+    const cursorPredicate = buildCursorPredicate({
+      aggregateIdColumn: this.eventTable.aggregateId,
+      timestampColumn: this.eventTable.timestamp,
+      lastEvaluatedKey,
+      reverse: reverse === true,
+      coerceTimestamp: coerceSqliteTimestamp,
+    });
+
+    const pageFilters = [
+      ...baseFilters,
+      ...(cursorPredicate !== undefined ? [cursorPredicate] : []),
+    ];
 
     const countRows = (await this.db
       .select({ remaining: sql<number>`count(*)` })
       .from(this.eventTable)
       .where(and(...pageFilters))) as { remaining: unknown }[];
     const remainingCount = Number(countRows[0]?.remaining ?? 0);
-
-    const order = reverse
-      ? desc(this.eventTable.timestamp)
-      : asc(this.eventTable.timestamp);
 
     const pageBase = this.db
       .select({
@@ -392,7 +334,13 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
       })
       .from(this.eventTable)
       .where(and(...pageFilters))
-      .orderBy(order);
+      .orderBy(
+        ...buildOrderBy({
+          aggregateIdColumn: this.eventTable.aggregateId,
+          timestampColumn: this.eventTable.timestamp,
+          reverse: reverse === true,
+        }),
+      );
 
     const pageQuery = limit !== undefined ? pageBase.limit(limit) : pageBase;
     const pageRows = (await pageQuery) as {
@@ -400,30 +348,17 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
       timestamp: unknown;
     }[];
 
-    const aggregateIds = pageRows.map(row => ({
-      aggregateId: row.aggregate_id as string,
-      initialEventTimestamp: toIsoString(row.timestamp),
-    }));
-
-    const hasNextPage = limit === undefined ? false : remainingCount > limit;
-
-    // Emit the *resolved* values (options ?? prev-token) so page-3+ tokens
-    // retain limit/initialEvent*/reverse when the caller supplied them only
-    // in the first call.
-    const parsedNextPageToken: ParsedPageToken = {
+    return buildListAggregateIdsOutput({
+      rows: pageRows,
       limit,
-      initialEventAfter,
-      initialEventBefore,
-      reverse,
-      lastEvaluatedKey: aggregateIds.at(-1),
-    };
-
-    return {
-      aggregateIds,
-      ...(hasNextPage
-        ? { nextPageToken: JSON.stringify(parsedNextPageToken) }
-        : {}),
-    };
+      remainingCount,
+      resolvedInputs: {
+        limit,
+        initialEventAfter,
+        initialEventBefore,
+        reverse,
+      },
+    });
   }
 }
 

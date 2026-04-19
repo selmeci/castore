@@ -36,7 +36,7 @@ The project's root `.npmrc` opts into pnpm 10's strict supply-chain posture: pac
 
 When `better-sqlite3` (which ships native `node-gyp`-compiled bindings) is added as a dev dependency without an allow-list entry, `pnpm install` appears clean but `import Database from 'better-sqlite3'` throws at runtime:
 
-```
+```text
 Error: Could not locate the bindings file.
   Tried:
     .../better-sqlite3/build/Release/better_sqlite3.node

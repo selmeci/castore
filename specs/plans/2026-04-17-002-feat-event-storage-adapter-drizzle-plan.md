@@ -156,7 +156,7 @@ Docs-site changes live under `docs/docs/` (Unit 7). The greenfield demo (Unit 8)
 
 **Construction and query flow (pg shown; mysql / sqlite analogous):**
 
-```
+```ts
 // User side — simple case
 import { drizzle } from 'drizzle-orm/postgres-js'
 import postgres from 'postgres'
@@ -181,7 +181,7 @@ const adapter = new DrizzlePgEventStorageAdapter({ db, eventTable: myEvents })
 
 **Adapter method boundaries:**
 
-```
+```text
 pushEvent(event, opts)
   └─ INSERT ... [ON CONFLICT ... DO UPDATE if opts.force] RETURNING *
      └─ on unique-violation → throw DrizzleEventAlreadyExistsError

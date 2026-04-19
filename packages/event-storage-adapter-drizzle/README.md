@@ -351,7 +351,8 @@ The adapter persists events in a single table with columns:
 | payload        | `jsonb` (nullable) | `json` (nullable)      | `text mode:'json'` nullable | Event payload; parsed JS value on read               |
 | metadata       | `jsonb` (nullable) | `json` (nullable)      | `text mode:'json'` nullable | Event metadata; parsed JS value on read              |
 | timestamp      | `timestamptz(3)`   | `datetime(3)` (string) | `text` (ISO-8601)           | Event timestamp; server-default where supported      |
-| **UNIQUE**     | `(aggregate_name, aggregate_id, version)` — constraint name `event_aggregate_version_uq`                                                                                            |
+
+The table also carries a `UNIQUE (aggregate_name, aggregate_id, version)` constraint named `event_aggregate_version_uq`, which enforces optimistic concurrency and is what surfaces as `DrizzleEventAlreadyExistsError` on duplicate pushes.
 
 These column shapes are part of the adapter contract and are **not** configurable in v1. You can add extra columns by composing with `eventColumns` + `eventTableConstraints`, but you cannot rename or re-type existing columns.
 

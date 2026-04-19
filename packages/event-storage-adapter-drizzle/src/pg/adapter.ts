@@ -1,5 +1,4 @@
-/* eslint-disable complexity */
-import { and, asc, desc, eq, gt, lt, sql } from 'drizzle-orm';
+import { and, sql } from 'drizzle-orm';
 import type { PgDatabase } from 'drizzle-orm/pg-core';
 
 import { GroupedEvent } from '@castore/core';
@@ -15,32 +14,22 @@ import type {
 } from '@castore/core';
 
 import { DrizzleEventAlreadyExistsError } from '../common/error';
+import type { DrizzleEventRow } from '../common/eventDetail';
+import { buildEventDetail } from '../common/eventDetail';
+import {
+  buildGetEventsFilters,
+  buildGetEventsOrder,
+} from '../common/getEvents';
+import {
+  buildBaseFilters,
+  buildCursorPredicate,
+  buildListAggregateIdsOutput,
+  buildOrderBy,
+} from '../common/listAggregateIds';
+import { parsePageToken } from '../common/pageToken';
 import { makeParseGroupedEvents } from '../common/parseGroupedEvents';
-import { toIsoString } from '../common/toIsoString';
 import { walkErrorCauses } from '../common/walkErrorCauses';
 import type { PgEventTableContract } from './contract';
-
-export type ParsedPageToken = {
-  limit?: number;
-  initialEventAfter?: string | undefined;
-  initialEventBefore?: string | undefined;
-  reverse?: boolean | undefined;
-  lastEvaluatedKey?:
-    | {
-        aggregateId: string;
-        initialEventTimestamp: string;
-      }
-    | undefined;
-};
-
-type PgEventRow = {
-  aggregate_id: unknown;
-  version: unknown;
-  type: unknown;
-  payload: unknown;
-  metadata: unknown;
-  timestamp: unknown;
-};
 
 type AnyPgDatabaseOrTx = PgDatabase<any, any, any>;
 
@@ -50,6 +39,8 @@ type AnyPgDatabaseOrTx = PgDatabase<any, any, any>;
 // versions that may wrap the driver error.
 const isDuplicateKeyError = (err: unknown): boolean =>
   walkErrorCauses(err, node => (node as { code?: unknown }).code === '23505');
+
+const coercePgTimestamp = (iso: string): Date => new Date(iso);
 
 export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
   private db: AnyPgDatabaseOrTx;
@@ -64,27 +55,6 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
   }) {
     this.db = db;
     this.eventTable = eventTable;
-  }
-
-  private toEventDetail(row: PgEventRow): EventDetail {
-    const eventDetail = {
-      aggregateId: row.aggregate_id as string,
-      version: Number(row.version),
-      type: row.type as string,
-      payload: row.payload as unknown | null,
-      metadata: row.metadata as unknown | null,
-      timestamp: toIsoString(row.timestamp),
-    };
-    // Drop only when the DB stored SQL NULL. Falsy JSON values (`false`,
-    // `0`, `''`) are legal payloads and must round-trip through the adapter.
-    if (eventDetail.payload === null || eventDetail.payload === undefined) {
-      delete (eventDetail as { payload?: unknown }).payload;
-    }
-    if (eventDetail.metadata === null || eventDetail.metadata === undefined) {
-      delete (eventDetail as { metadata?: unknown }).metadata;
-    }
-
-    return eventDetail as EventDetail;
   }
 
   private buildInsertValues(
@@ -142,9 +112,9 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
     const { aggregateId, version } = event;
     const values = this.buildInsertValues(options.eventStoreId, event);
 
-    let res: PgEventRow[];
+    let res: DrizzleEventRow[];
     try {
-      if (options.force) {
+      if (options.force === true) {
         res = (await tx
           .insert(this.eventTable)
           .values(values)
@@ -156,23 +126,12 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
             ],
             set: this.buildForceUpdateSet(event),
           })
-          .returning({
-            aggregate_id: this.eventTable.aggregateId,
-            version: this.eventTable.version,
-            type: this.eventTable.type,
-            payload: this.eventTable.payload,
-            metadata: this.eventTable.metadata,
-            timestamp: this.eventTable.timestamp,
-          })) as PgEventRow[];
+          .returning(this.selectColumns())) as DrizzleEventRow[];
       } else {
-        res = (await tx.insert(this.eventTable).values(values).returning({
-          aggregate_id: this.eventTable.aggregateId,
-          version: this.eventTable.version,
-          type: this.eventTable.type,
-          payload: this.eventTable.payload,
-          metadata: this.eventTable.metadata,
-          timestamp: this.eventTable.timestamp,
-        })) as PgEventRow[];
+        res = (await tx
+          .insert(this.eventTable)
+          .values(values)
+          .returning(this.selectColumns())) as DrizzleEventRow[];
       }
     } catch (err) {
       if (isDuplicateKeyError(err)) {
@@ -191,7 +150,7 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
       throw new Error('Failed to insert event');
     }
 
-    return { event: this.toEventDetail(insertedEvent) };
+    return { event: buildEventDetail(insertedEvent) };
   }
 
   async pushEvent(
@@ -206,35 +165,29 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
     context: EventStoreContext,
     options?: EventsQueryOptions,
   ): Promise<{ events: EventDetail[] }> {
-    const filters = [
-      eq(this.eventTable.aggregateName, context.eventStoreId),
-      eq(this.eventTable.aggregateId, aggregateId),
-    ];
-
-    if (options?.minVersion !== undefined) {
-      filters.push(sql`${this.eventTable.version} >= ${options.minVersion}`);
-    }
-    if (options?.maxVersion !== undefined) {
-      filters.push(sql`${this.eventTable.version} <= ${options.maxVersion}`);
-    }
-
-    const order = options?.reverse
-      ? desc(this.eventTable.version)
-      : asc(this.eventTable.version);
+    const filters = buildGetEventsFilters({
+      aggregateNameColumn: this.eventTable.aggregateName,
+      aggregateIdColumn: this.eventTable.aggregateId,
+      versionColumn: this.eventTable.version,
+      eventStoreId: context.eventStoreId,
+      aggregateId,
+      minVersion: options?.minVersion,
+      maxVersion: options?.maxVersion,
+    });
 
     const baseQuery = this.db
       .select(this.selectColumns())
       .from(this.eventTable)
       .where(and(...filters))
-      .orderBy(order);
+      .orderBy(buildGetEventsOrder(this.eventTable.version, options));
 
     const query =
       options?.limit !== undefined ? baseQuery.limit(options.limit) : baseQuery;
 
-    const rows = (await query) as PgEventRow[];
+    const rows = (await query) as DrizzleEventRow[];
 
     return {
-      events: rows.map(row => this.toEventDetail(row)),
+      events: rows.map(row => buildEventDetail(row)),
     };
   }
 
@@ -273,33 +226,6 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
     return new GroupedEvent({ event: eventDetail, eventStorageAdapter: this });
   }
 
-  private parseInputs({
-    inputOptions,
-  }: {
-    inputOptions: ListAggregateIdsOptions | undefined;
-  }) {
-    let pageTokenParsed: ParsedPageToken = {};
-
-    if (typeof inputOptions?.pageToken === 'string') {
-      try {
-        pageTokenParsed = JSON.parse(inputOptions.pageToken) as ParsedPageToken;
-      } catch (error) {
-        console.error(error);
-        throw new Error('Invalid page token');
-      }
-    }
-
-    return {
-      limit: pageTokenParsed.limit ?? inputOptions?.limit,
-      initialEventAfter:
-        pageTokenParsed.initialEventAfter ?? inputOptions?.initialEventAfter,
-      initialEventBefore:
-        pageTokenParsed.initialEventBefore ?? inputOptions?.initialEventBefore,
-      reverse: pageTokenParsed.reverse ?? inputOptions?.reverse,
-      lastEvaluatedKey: pageTokenParsed.lastEvaluatedKey,
-    };
-  }
-
   async listAggregateIds(
     context: EventStoreContext,
     options?: ListAggregateIdsOptions,
@@ -310,45 +236,39 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
       initialEventBefore,
       reverse,
       lastEvaluatedKey,
-    } = this.parseInputs({ inputOptions: options });
+    } = parsePageToken(options);
 
     // Two-query approach (see plan: CTE is optional for this dialect; two
-    // queries are observationally identical from the caller's perspective and
-    // cleaner to express in Drizzle without raw SQL).
-    const baseFilters = [
-      eq(this.eventTable.aggregateName, context.eventStoreId),
-      eq(this.eventTable.version, 1),
-    ];
-    if (initialEventAfter !== undefined) {
-      baseFilters.push(
-        gt(this.eventTable.timestamp, new Date(initialEventAfter)),
-      );
-    }
-    if (initialEventBefore !== undefined) {
-      baseFilters.push(
-        lt(this.eventTable.timestamp, new Date(initialEventBefore)),
-      );
-    }
+    // queries are observationally identical from the caller's perspective
+    // and cleaner to express in Drizzle without raw SQL).
+    const baseFilters = buildBaseFilters({
+      aggregateNameColumn: this.eventTable.aggregateName,
+      versionColumn: this.eventTable.version,
+      timestampColumn: this.eventTable.timestamp,
+      eventStoreId: context.eventStoreId,
+      initialEventAfter,
+      initialEventBefore,
+      coerceTimestamp: coercePgTimestamp,
+    });
 
-    const pageFilters = [...baseFilters];
-    if (lastEvaluatedKey?.initialEventTimestamp !== undefined) {
-      const cursor = new Date(lastEvaluatedKey.initialEventTimestamp);
-      pageFilters.push(
-        reverse
-          ? lt(this.eventTable.timestamp, cursor)
-          : gt(this.eventTable.timestamp, cursor),
-      );
-    }
+    const cursorPredicate = buildCursorPredicate({
+      aggregateIdColumn: this.eventTable.aggregateId,
+      timestampColumn: this.eventTable.timestamp,
+      lastEvaluatedKey,
+      reverse: reverse === true,
+      coerceTimestamp: coercePgTimestamp,
+    });
+
+    const pageFilters = [
+      ...baseFilters,
+      ...(cursorPredicate !== undefined ? [cursorPredicate] : []),
+    ];
 
     const countRows = (await this.db
       .select({ remaining: sql<number>`count(*)::int` })
       .from(this.eventTable)
       .where(and(...pageFilters))) as { remaining: number }[];
     const remainingCount = Number(countRows[0]?.remaining ?? 0);
-
-    const order = reverse
-      ? desc(this.eventTable.timestamp)
-      : asc(this.eventTable.timestamp);
 
     const pageBase = this.db
       .select({
@@ -357,7 +277,13 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
       })
       .from(this.eventTable)
       .where(and(...pageFilters))
-      .orderBy(order);
+      .orderBy(
+        ...buildOrderBy({
+          aggregateIdColumn: this.eventTable.aggregateId,
+          timestampColumn: this.eventTable.timestamp,
+          reverse: reverse === true,
+        }),
+      );
 
     const pageQuery = limit !== undefined ? pageBase.limit(limit) : pageBase;
     const pageRows = (await pageQuery) as {
@@ -365,31 +291,17 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
       timestamp: unknown;
     }[];
 
-    const aggregateIds = pageRows.map(row => ({
-      aggregateId: row.aggregate_id as string,
-      initialEventTimestamp: toIsoString(row.timestamp),
-    }));
-
-    const hasNextPage = limit === undefined ? false : remainingCount > limit;
-
-    // Emit the *resolved* values (options ?? prev-token) so page-3+ tokens
-    // retain limit/initialEvent*/reverse when the caller supplied them only
-    // in the first call. The previous `options?.limit` path lost those on
-    // every hop past the first page.
-    const parsedNextPageToken: ParsedPageToken = {
+    return buildListAggregateIdsOutput({
+      rows: pageRows,
       limit,
-      initialEventAfter,
-      initialEventBefore,
-      reverse,
-      lastEvaluatedKey: aggregateIds.at(-1),
-    };
-
-    return {
-      aggregateIds,
-      ...(hasNextPage
-        ? { nextPageToken: JSON.stringify(parsedNextPageToken) }
-        : {}),
-    };
+      remainingCount,
+      resolvedInputs: {
+        limit,
+        initialEventAfter,
+        initialEventBefore,
+        reverse,
+      },
+    });
   }
 }
 

@@ -5,6 +5,8 @@ import { drizzle as drizzleBetterSqlite } from 'drizzle-orm/better-sqlite3';
 import { drizzle as drizzleLibsql } from 'drizzle-orm/libsql';
 import { sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
+import { GroupedEvent } from '@castore/core';
+
 import { makeAdapterConformanceSuite } from '../__tests__/conformance';
 import { DrizzleEventAlreadyExistsError } from '../common/error';
 import { DrizzleSqliteEventStorageAdapter } from './adapter';
@@ -224,5 +226,148 @@ describe('drizzle sqlite storage adapter - libsql driver coverage', () => {
     await expect(() =>
       libsqlAdapter.pushEvent(eventMock1, { eventStoreId }),
     ).rejects.toBeInstanceOf(DrizzleEventAlreadyExistsError);
+  });
+});
+
+describe('drizzle sqlite storage adapter - concurrent pushEventGroup', () => {
+  // Regression test for the shared-handle transaction hazard: SQLite drivers
+  // (better-sqlite3, libsql) do NOT support nested transactions on a single
+  // connection, so two in-flight `pushEventGroup` calls on the same adapter
+  // must be serialized by the adapter itself. Without serialization, the
+  // second BEGIN fires while the first transaction is still open and the
+  // driver throws "cannot start a transaction within a transaction" (or
+  // silently splices writes into the wrong transaction).
+
+  const eventStoreId = 'eventStoreId';
+  const concCreateSql = `
+    CREATE TABLE event (
+      aggregate_name  TEXT NOT NULL,
+      aggregate_id    TEXT NOT NULL,
+      version         INTEGER NOT NULL,
+      type            TEXT NOT NULL,
+      payload         TEXT,
+      metadata        TEXT,
+      timestamp       TEXT NOT NULL,
+      CONSTRAINT event_aggregate_version_uq UNIQUE (aggregate_name, aggregate_id, version)
+    )
+  `;
+
+  let concBsDb: Database.Database;
+  let concDb: ReturnType<typeof drizzleBetterSqlite>;
+  let concAdapter: DrizzleSqliteEventStorageAdapter;
+
+  beforeEach(() => {
+    concBsDb = new Database(':memory:');
+    concDb = drizzleBetterSqlite(concBsDb);
+    concBsDb.exec(concCreateSql);
+    concAdapter = new DrizzleSqliteEventStorageAdapter({
+      db: concDb,
+      eventTable,
+    });
+  });
+
+  afterEach(() => {
+    concBsDb.close();
+  });
+
+  it('serializes overlapping pushEventGroup calls on the same adapter', async () => {
+    const aggregateIdA = randomUUID();
+    const aggregateIdB = randomUUID();
+    const timestamp = '2021-01-01T00:00:00.000Z';
+
+    const groupA: [GroupedEvent, ...GroupedEvent[]] = [
+      new GroupedEvent({
+        event: { aggregateId: aggregateIdA, version: 1, type: 'A', timestamp },
+        eventStorageAdapter: concAdapter,
+        context: { eventStoreId },
+      }),
+      new GroupedEvent({
+        event: { aggregateId: aggregateIdA, version: 2, type: 'A', timestamp },
+        eventStorageAdapter: concAdapter,
+        context: { eventStoreId },
+      }),
+    ];
+
+    const groupB: [GroupedEvent, ...GroupedEvent[]] = [
+      new GroupedEvent({
+        event: { aggregateId: aggregateIdB, version: 1, type: 'B', timestamp },
+        eventStorageAdapter: concAdapter,
+        context: { eventStoreId },
+      }),
+      new GroupedEvent({
+        event: { aggregateId: aggregateIdB, version: 2, type: 'B', timestamp },
+        eventStorageAdapter: concAdapter,
+        context: { eventStoreId },
+      }),
+    ];
+
+    // Fire both without awaiting between — both promise chains are in flight
+    // simultaneously. Without serialization, one would throw "cannot start a
+    // transaction within a transaction".
+    const [resA, resB] = await Promise.all([
+      concAdapter.pushEventGroup({}, ...groupA),
+      concAdapter.pushEventGroup({}, ...groupB),
+    ]);
+
+    expect(resA.eventGroup).toHaveLength(2);
+    expect(resB.eventGroup).toHaveLength(2);
+
+    // Both transactions committed independently.
+    const { events: eventsA } = await concAdapter.getEvents(aggregateIdA, {
+      eventStoreId,
+    });
+    const { events: eventsB } = await concAdapter.getEvents(aggregateIdB, {
+      eventStoreId,
+    });
+    expect(eventsA).toHaveLength(2);
+    expect(eventsB).toHaveLength(2);
+  });
+
+  it('does not poison the queue after a failed pushEventGroup', async () => {
+    const aggregateIdA = randomUUID();
+    const aggregateIdB = randomUUID();
+    const timestamp = '2021-01-01T00:00:00.000Z';
+
+    // Pre-seed a duplicate so this group's second push fails the unique
+    // constraint and the whole group rolls back.
+    await concAdapter.pushEvent(
+      { aggregateId: aggregateIdA, version: 2, type: 'A', timestamp },
+      { eventStoreId },
+    );
+
+    const failingGroup: [GroupedEvent, ...GroupedEvent[]] = [
+      new GroupedEvent({
+        event: { aggregateId: aggregateIdA, version: 1, type: 'A', timestamp },
+        eventStorageAdapter: concAdapter,
+        context: { eventStoreId },
+      }),
+      new GroupedEvent({
+        event: { aggregateId: aggregateIdA, version: 2, type: 'A', timestamp },
+        eventStorageAdapter: concAdapter,
+        context: { eventStoreId },
+      }),
+    ];
+
+    // A clean group that must still run after the first's rejection.
+    const cleanGroup: [GroupedEvent, ...GroupedEvent[]] = [
+      new GroupedEvent({
+        event: { aggregateId: aggregateIdB, version: 1, type: 'B', timestamp },
+        eventStorageAdapter: concAdapter,
+        context: { eventStoreId },
+      }),
+    ];
+
+    const failingP = concAdapter.pushEventGroup({}, ...failingGroup);
+    const cleanP = concAdapter.pushEventGroup({}, ...cleanGroup);
+
+    await expect(failingP).rejects.toThrow();
+    await expect(cleanP).resolves.toMatchObject({
+      eventGroup: [{ event: { aggregateId: aggregateIdB } }],
+    });
+
+    const { events: eventsB } = await concAdapter.getEvents(aggregateIdB, {
+      eventStoreId,
+    });
+    expect(eventsB).toHaveLength(1);
   });
 });
