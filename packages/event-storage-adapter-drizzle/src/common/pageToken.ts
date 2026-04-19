@@ -1,4 +1,31 @@
+import * as v from 'valibot';
+
 import type { ListAggregateIdsOptions } from '@castore/core';
+
+/**
+ * Valibot schema for the JSON blob `listAggregateIds` serialises into
+ * `nextPageToken`. Every field is optional — an empty page token is a valid
+ * starting state, and the presence of each field is what distinguishes "caller
+ * supplied it" from "inherit from prior token or inputOptions".
+ *
+ * All string fields are validated strictly: a malformed token (e.g. a number
+ * where a string is expected, or a `lastEvaluatedKey` missing one of its two
+ * string fields) throws rather than silently type-asserting through. The
+ * decoded token is untrusted input — a caller can pass anything — so we
+ * validate rather than cast.
+ */
+const pageTokenSchema = v.object({
+  limit: v.optional(v.number()),
+  initialEventAfter: v.optional(v.string()),
+  initialEventBefore: v.optional(v.string()),
+  reverse: v.optional(v.boolean()),
+  lastEvaluatedKey: v.optional(
+    v.object({
+      aggregateId: v.string(),
+      initialEventTimestamp: v.string(),
+    }),
+  ),
+});
 
 /**
  * Shape of the JSON blob `listAggregateIds` serialises into `nextPageToken`.
@@ -8,33 +35,28 @@ import type { ListAggregateIdsOptions } from '@castore/core';
  * any other (within the same deployment — cross-dialect token round-trip is
  * not a supported use case, but keeping the shape identical means the
  * adapter rewrites its own tokens byte-for-byte).
+ *
+ * Derived from `pageTokenSchema` so the runtime validator and the compile-time
+ * type cannot drift.
  */
-export type ParsedPageToken = {
-  limit?: number;
-  initialEventAfter?: string | undefined;
-  initialEventBefore?: string | undefined;
-  reverse?: boolean | undefined;
-  lastEvaluatedKey?:
-    | {
-        aggregateId: string;
-        initialEventTimestamp: string;
-      }
-    | undefined;
-};
+export type ParsedPageToken = v.InferOutput<typeof pageTokenSchema>;
 
 /**
  * Decode the opaque `pageToken` JSON blob, falling back to an empty token
- * when the input is absent. Throws on a malformed token; the parse error is
- * logged to stderr and re-wrapped as a plain `Error('Invalid page token')`
- * so callers cannot distinguish accidentally-corrupted tokens from tokens
- * produced by a different adapter version.
+ * when the input is absent. Throws `Error('Invalid page token')` on either
+ * a JSON parse failure or a shape-validation failure; the underlying error is
+ * logged to stderr but the thrown error is deliberately generic so callers
+ * cannot distinguish accidentally-corrupted tokens from tokens produced by a
+ * different adapter version.
  */
 const decodePageToken = (pageToken: string | undefined): ParsedPageToken => {
   if (typeof pageToken !== 'string') {
     return {};
   }
   try {
-    return JSON.parse(pageToken) as ParsedPageToken;
+    const raw: unknown = JSON.parse(pageToken);
+
+    return v.parse(pageTokenSchema, raw);
   } catch (error) {
     console.error(error);
     throw new Error('Invalid page token');

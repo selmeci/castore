@@ -130,8 +130,19 @@ export const buildListAggregateIdsOutput = (params: {
     initialEventTimestamp: toIsoString(row.timestamp),
   }));
 
+  // `limit > 0` and `aggregateIds.length > 0` are load-bearing: a non-positive
+  // or missing limit with a non-zero `remainingCount` would otherwise emit a
+  // `nextPageToken` whose `lastEvaluatedKey` is `undefined`, producing a
+  // cursor that decodes to the first-page position and loops callers forever.
   const hasNextPage =
-    params.limit === undefined ? false : params.remainingCount > params.limit;
+    params.limit !== undefined &&
+    params.limit > 0 &&
+    aggregateIds.length > 0 &&
+    params.remainingCount > params.limit;
+
+  if (!hasNextPage) {
+    return { aggregateIds };
+  }
 
   const parsedNextPageToken: ParsedPageToken = {
     limit: params.resolvedInputs.limit,
@@ -143,8 +154,6 @@ export const buildListAggregateIdsOutput = (params: {
 
   return {
     aggregateIds,
-    ...(hasNextPage
-      ? { nextPageToken: JSON.stringify(parsedNextPageToken) }
-      : {}),
+    nextPageToken: JSON.stringify(parsedNextPageToken),
   };
 };

@@ -78,7 +78,7 @@ In this specific case the bug that Item 13 fixed is a silent data-corruption haz
 
 ### Bad — overlap check uses only anchor files
 
-```
+```text
 Cluster A anchors: pg/adapter.ts, mysql/adapter.ts, sqlite/adapter.ts
 Cluster B anchors: eslint.config.js, pg/adapter.ts
 Item 13  anchors: sqlite/adapter.ts
@@ -94,7 +94,7 @@ Batch 2: B + 13 in parallel   ← collision on sqlite/adapter.ts
 
 ### Good — expand each unit's file list with refactor-implied files
 
-```
+```text
 Cluster A effective files:
   pg/adapter.ts, mysql/adapter.ts, sqlite/adapter.ts
 Cluster B effective files (brief: "extract common helpers from all three adapters"):

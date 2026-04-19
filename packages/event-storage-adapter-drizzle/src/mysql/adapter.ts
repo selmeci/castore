@@ -92,6 +92,12 @@ export class DrizzleMysqlEventStorageAdapter implements EventStorageAdapter {
     // would-be-inserted value for `col`. The `new_row.col` alias form was
     // added in 8.0.20 but the `VALUES()` form still works through 8.x and
     // is more portable.
+    //
+    // TODO: migrate to the `new_row.col` alias form once Drizzle exposes a
+    // first-class helper for it. The `VALUES()` form is deprecated as of
+    // MySQL 8.0.20 and removed in a future major; the alias form is the
+    // documented replacement (see MySQL 8.0 docs: "INSERT ... ON DUPLICATE
+    // KEY UPDATE Statement").
     const set: Record<string, unknown> = {
       type: sql`VALUES(${this.eventTable.type})`,
       payload: sql`VALUES(${this.eventTable.payload})`,

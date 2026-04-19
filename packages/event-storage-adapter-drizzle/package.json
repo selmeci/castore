@@ -41,7 +41,8 @@
     "watch": "rm -rf dist && concurrently 'npm:package-* --watch'"
   },
   "dependencies": {
-    "@babel/runtime": "^7.28.4"
+    "@babel/runtime": "^7.28.4",
+    "valibot": "^1.3.1"
   },
   "devDependencies": {
     "@babel/cli": "^7.28.3",
