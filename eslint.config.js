@@ -84,7 +84,15 @@ export default [
         {
           patterns: [
             {
-              group: ['@castore/*/*'],
+              // Match `@castore/<pkg>/<anything>` but NOT the three declared
+              // per-dialect sub-path exports of
+              // @castore/event-storage-adapter-drizzle, which are part of
+              // that package's public surface (see its `exports` map).
+              // Every other internal @castore/*/<module> path stays forbidden.
+              // Using `regex` because flat-config `no-restricted-imports`
+              // doesn't support an `allow` list on group patterns.
+              regex:
+                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite)$)[^/]+/.+',
               message:
                 'import of internal modules must be done at the root level.',
             },
@@ -193,7 +201,12 @@ export default [
         {
           patterns: [
             {
-              group: ['@castore/*/*'],
+              // See the same rule in the JS block above — this regex matches
+              // `@castore/*/*` but excludes the three declared sub-path
+              // exports of @castore/event-storage-adapter-drizzle, which are
+              // part of that package's public surface.
+              regex:
+                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite)$)[^/]+/.+',
               message:
                 'import of internal modules must be done at the root level.',
             },

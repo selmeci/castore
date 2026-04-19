@@ -36,6 +36,7 @@ Castore is a pnpm + Nx monorepo of TypeScript packages for event sourcing. Works
 - `packages/lib-*` — side libraries (`lib-dam` data-access/migration utils, `lib-react-visualizer` UI, `lib-test-tools`).
 - `demo/{blueprint,implementation,visualization}` — runnable demos that exercise the packages end-to-end.
 - `docs` — Docusaurus site under `docs/docs/` (installation, event sourcing concepts, reacting-to-events, migration guides).
+- `docs/solutions/` — documented solutions to past problems (bugs, best practices, tooling gotchas), organized by category (`integration-issues/`, `developer-experience/`, `best-practices/`, etc.) with YAML frontmatter (`module`, `tags`, `problem_type`). Relevant when implementing or debugging in documented areas.
 - `commonConfiguration/{babel.config.js,vite.config.js}` — shared build/test configs consumed by every package.
 - `scripts/setPackagesVersions.ts` — release helper invoked via `pnpm set-packages-versions`.
 
@@ -173,4 +174,8 @@ grepai trace graph "ValidateToken" --depth 3 --json
 2. Use `grepai trace` to understand function relationships
 3. Use `Read` tool to examine files from results
 4. Only use Grep for exact string searches if needed
+
+### Sub-agents
+
+This rule applies to delegated work as well. When spawning a sub-agent (Explore, general-purpose, Plan, deep-explore, feature-dev:*, etc.) for any intent-based code exploration, explicitly instruct it in the prompt to prefer `grepai search "<english intent>" --json --compact` over `Grep`/`Glob`, and to use `grepai trace` for call-graph questions. Sub-agents read this CLAUDE.md, but the default system prompt still biases them toward `Grep`/`Glob` — the explicit instruction in the delegation prompt is what makes the rule stick.
 
