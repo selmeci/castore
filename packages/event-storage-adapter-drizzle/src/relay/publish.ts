@@ -13,6 +13,7 @@ import type {
   RelayRegistryEntry,
 } from '../common/outbox/types';
 import { AGGREGATE_MISSING, buildEnvelope } from './envelope';
+import { dispatchOnDead } from './hooks';
 
 /**
  * Dialect-parametric context threaded through every relay operation. The
@@ -144,13 +145,7 @@ const transitionToDead = async ({
     return 'fenced-no-op';
   }
 
-  if (hooks.onDead !== undefined) {
-    try {
-      await hooks.onDead({ row, lastError });
-    } catch (hookErr) {
-      console.error('[outbox relay] onDead hook threw:', hookErr);
-    }
-  }
+  await dispatchOnDead(hooks, { row, lastError });
 
   return 'dead';
 };
