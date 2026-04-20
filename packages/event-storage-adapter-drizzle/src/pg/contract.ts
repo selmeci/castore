@@ -22,3 +22,26 @@ type RequiredPgColumns = {
  */
 export type PgEventTableContract<Dialect extends 'pg' = 'pg'> = PgTable &
   RequiredPgColumns & { readonly __dialect?: Dialect };
+
+type RequiredPgOutboxColumns = {
+  id: PgColumn;
+  aggregateName: PgColumn;
+  aggregateId: PgColumn;
+  version: PgColumn;
+  createdAt: PgColumn;
+  claimToken: PgColumn;
+  claimedAt: PgColumn;
+  processedAt: PgColumn;
+  attempts: PgColumn;
+  lastError: PgColumn;
+  lastAttemptAt: PgColumn;
+  deadAt: PgColumn;
+};
+
+/**
+ * Compile-time constraint on the `outboxTable` passed to the pg adapter
+ * constructor. Same rationale as `PgEventTableContract`; users may spread
+ * `outboxColumns` into a custom-named table with extra columns.
+ */
+export type PgOutboxTableContract<Dialect extends 'pg' = 'pg'> = PgTable &
+  RequiredPgOutboxColumns & { readonly __dialect?: Dialect };

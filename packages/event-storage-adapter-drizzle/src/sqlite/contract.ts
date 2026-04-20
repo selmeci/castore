@@ -16,3 +16,21 @@ type RequiredSqliteColumns = {
  */
 export type SqliteEventTableContract<Dialect extends 'sqlite' = 'sqlite'> =
   SQLiteTable & RequiredSqliteColumns & { readonly __dialect?: Dialect };
+
+type RequiredSqliteOutboxColumns = {
+  id: SQLiteColumn;
+  aggregateName: SQLiteColumn;
+  aggregateId: SQLiteColumn;
+  version: SQLiteColumn;
+  createdAt: SQLiteColumn;
+  claimToken: SQLiteColumn;
+  claimedAt: SQLiteColumn;
+  processedAt: SQLiteColumn;
+  attempts: SQLiteColumn;
+  lastError: SQLiteColumn;
+  lastAttemptAt: SQLiteColumn;
+  deadAt: SQLiteColumn;
+};
+
+export type SqliteOutboxTableContract<Dialect extends 'sqlite' = 'sqlite'> =
+  SQLiteTable & RequiredSqliteOutboxColumns & { readonly __dialect?: Dialect };

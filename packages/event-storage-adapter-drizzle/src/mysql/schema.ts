@@ -77,3 +77,61 @@ export const eventTable = mysqlTable(
   eventColumns,
   eventTableConstraints,
 );
+
+/**
+ * Drizzle column definitions for the outbox table (mysql dialect).
+ *
+ * Pointer-shaped — the relay reads the source event row at publish time.
+ * MySQL has no native UUID type, so `id` is `varchar(36)` with a server-side
+ * `(UUID())` default. All mutation timestamps are DB-authoritative (set via
+ * `NOW(3)` in write SQL); `created_at` has a `CURRENT_TIMESTAMP(3)` default
+ * so plain Drizzle inserts pick up server time.
+ *
+ * `last_error` is `varchar(2048)` — a hard DB limit that matches the scrubber's
+ * soft cap; rows overflowing the cap are truncated by the scrubber before
+ * hitting the DB.
+ */
+export const outboxColumns = {
+  id: varchar('id', { length: 36 })
+    .primaryKey()
+    .default(sql`(UUID())`),
+  aggregateName: varchar('aggregate_name', { length: 255 }).notNull(),
+  aggregateId: varchar('aggregate_id', { length: 64 }).notNull(),
+  version: int('version').notNull(),
+  createdAt: datetime('created_at', { mode: 'string', fsp: 3 })
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP(3)`),
+  claimToken: varchar('claim_token', { length: 36 }),
+  claimedAt: datetime('claimed_at', { mode: 'string', fsp: 3 }),
+  processedAt: datetime('processed_at', { mode: 'string', fsp: 3 }),
+  attempts: int('attempts').notNull().default(0),
+  lastError: varchar('last_error', { length: 2048 }),
+  lastAttemptAt: datetime('last_attempt_at', { mode: 'string', fsp: 3 }),
+  deadAt: datetime('dead_at', { mode: 'string', fsp: 3 }),
+};
+
+export const outboxTableConstraints = <
+  TTable extends {
+    aggregateName: MysqlIndexable;
+    aggregateId: MysqlIndexable;
+    version: MysqlIndexable;
+  },
+>(
+  table: TTable,
+): [IndexBuilder] => [
+  uniqueIndex('outbox_aggregate_version_uq').on(
+    table.aggregateName,
+    table.aggregateId,
+    table.version,
+  ),
+];
+
+/**
+ * Prebuilt outbox table for users who do not need any extra columns.
+ * Default table name is `castore_outbox`.
+ */
+export const outboxTable = mysqlTable(
+  'castore_outbox',
+  outboxColumns,
+  outboxTableConstraints,
+);
