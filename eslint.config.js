@@ -92,7 +92,7 @@ export default [
               // Using `regex` because flat-config `no-restricted-imports`
               // doesn't support an `allow` list on group patterns.
               regex:
-                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite)$)[^/]+/.+',
+                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite|relay)$)[^/]+/.+',
               message:
                 'import of internal modules must be done at the root level.',
             },
@@ -206,7 +206,7 @@ export default [
               // exports of @castore/event-storage-adapter-drizzle, which are
               // part of that package's public surface.
               regex:
-                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite)$)[^/]+/.+',
+                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite|relay)$)[^/]+/.+',
               message:
                 'import of internal modules must be done at the root level.',
             },
