@@ -1,4 +1,5 @@
 import { computeBackoffMs } from '../common/outbox/backoff';
+import { NonRetriableRelayError } from './errors';
 import { runOnce, type RelayState } from './runOnce';
 
 /**
@@ -9,12 +10,19 @@ import { runOnce, type RelayState } from './runOnce';
  * incident waiting to happen. Instead, the supervisor re-throws them so
  * the surrounding runtime (process manager, k8s, Lambda) can restart on
  * fresh code or surface the failure to the operator.
+ *
+ * `NonRetriableRelayError` covers the relay's *own* deterministic
+ * invariants (null `claim_token` on a claimed row, unrecognised mysql
+ * driver result shape, …). Those throw plain `Error` would otherwise land
+ * in the exponential-backoff branch below and spin forever on a bug the
+ * loop cannot clear.
  */
 const PROGRAMMING_ERROR_CLASSES = [
   TypeError,
   RangeError,
   ReferenceError,
   SyntaxError,
+  NonRetriableRelayError,
 ] as const;
 
 const isProgrammingError = (err: unknown): boolean =>

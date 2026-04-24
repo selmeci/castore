@@ -20,6 +20,7 @@ import {
   InvalidPublishTimeoutError,
   OutboxNotEnabledError,
   RegistryEntryMismatchError,
+  RelayStoppedError,
   UnsupportedChannelTypeError,
 } from './errors';
 import { createOutboxRelay } from './factory';
@@ -342,7 +343,44 @@ describe('createOutboxRelay', () => {
     await loop;
   });
 
-  it('runContinuously() can be restarted after stop() completes', async () => {
+  it('stop() before runContinuously() prevents a later runContinuously() from starting', async () => {
+    // Regression: prior to latching a durable `state.stopped` flag, the
+    // pre-start stop() set only the in-flight `state.stopping`, which
+    // runContinuously()'s entry code unconditionally cleared — so the
+    // stop was silently dropped and the caller got a fresh loop. The
+    // relay now throws RelayStoppedError instead, matching the
+    // docstring's "construct a fresh relay to re-run" contract.
+    const bus = new NotificationMessageBus({
+      messageBusId: 'b',
+      sourceEventStores: [countersStore],
+    });
+    const relay = createOutboxRelay({
+      dialect: 'sqlite',
+      adapter: makeOutboxAdapter(),
+      db,
+      outboxTable,
+      claim,
+      registry: [
+        {
+          eventStoreId: 'counters',
+          connectedEventStore: new ConnectedEventStore(countersStore, bus),
+          channel: bus,
+        },
+      ],
+      options: { pollingMs: 25 },
+    });
+
+    await relay.stop();
+
+    expect(() => relay.runContinuously()).toThrow(RelayStoppedError);
+  });
+
+  it('runContinuously() throws RelayStoppedError after a successful stop-during-loop', async () => {
+    // Option (a) semantics: stop() is permanent in both directions. Once
+    // the in-flight loop has unwound, `state.stopped` stays latched and
+    // a fresh runContinuously() on the same instance is rejected rather
+    // than starting a new loop. Callers who want a restart must build a
+    // new relay.
     const bus = new NotificationMessageBus({
       messageBusId: 'b',
       sourceEventStores: [countersStore],
@@ -367,10 +405,7 @@ describe('createOutboxRelay', () => {
     await relay.stop();
     await first;
 
-    // Restart must succeed after stop() has resolved.
-    const second = relay.runContinuously();
-    await relay.stop();
-    await second;
+    expect(() => relay.runContinuously()).toThrow(RelayStoppedError);
   });
 
   it('exposes retryRow and deleteRow bound to the relay db + table', async () => {

@@ -183,6 +183,44 @@ describe('admin API', () => {
         retryRow({ dialect: 'sqlite', db, outboxTable }, 'missing-id'),
       ).rejects.toBeInstanceOf(OutboxRowNotFoundError);
     });
+
+    it('accepts a processed (claim-released) row without force', async () => {
+      // End-to-end closure on the symmetric release-on-processed fix in
+      // publish.ts: once publish() stamps processed_at, it also nulls
+      // claim_token/claimed_at. `retryRow` (default-safe) must accept
+      // that row — otherwise an operator re-triggering a replay of an
+      // already-processed row hits RetryRowClaimedError even though no
+      // worker holds the row. Seed the post-publish end state directly:
+      // claim_token=null, processed_at=now, dead_at=null.
+      const id = await seed({
+        claimToken: null,
+        claimedAt: null,
+        processedAt: new Date().toISOString(),
+        deadAt: null,
+        attempts: 0,
+        lastError: null,
+        lastAttemptAt: null,
+      });
+
+      const res = await retryRow({ dialect: 'sqlite', db, outboxTable }, id);
+
+      expect(res).toEqual({
+        warning: 'at-most-once-not-guaranteed',
+        rowId: id,
+        forced: false,
+      });
+
+      const row = bs
+        .prepare('SELECT * FROM castore_outbox WHERE id = ?')
+        .get(id) as {
+        claim_token: string | null;
+        dead_at: string | null;
+        attempts: number;
+      };
+      expect(row.claim_token).toBeNull();
+      expect(row.dead_at).toBeNull();
+      expect(row.attempts).toBe(0);
+    });
   });
 
   describe('deleteRow', () => {

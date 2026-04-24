@@ -13,20 +13,18 @@ import type {
   RelayRegistryEntry,
 } from '../common/outbox/types';
 import { AGGREGATE_MISSING, buildEnvelope } from './envelope';
+import { NonRetriableRelayError } from './errors';
 import { dispatchOnDead } from './hooks';
 import { withTimeout } from './withTimeout';
 
-/**
- * Assert that a claimed row has a non-null `claim_token`. Every row reaching
- * `publish()` or the dead-transition path has been stamped by `claim()`; a
- * null token here is a contract violation (invariant break), not a runtime
- * case to paper over with `?? ''`. Throwing fails loud so a future refactor
- * that feeds non-claimed rows in is caught immediately instead of silently
- * no-oping every UPDATE.
- */
+// Every row reaching `publish()` / dead-transition has been stamped by
+// `claim()`; a null token is a contract violation, not a runtime case to
+// paper over with `?? ''`. Raised as `NonRetriableRelayError` so
+// `runContinuously`'s supervisor aborts the loop instead of spinning forever
+// on a deterministic bug.
 const requireClaimToken = (row: OutboxRow): string => {
   if (row.claim_token === null) {
-    throw new Error(
+    throw new NonRetriableRelayError(
       `Outbox row ${row.id} reached the publish path without a claim_token — invariant violation.`,
     );
   }
@@ -68,17 +66,10 @@ export interface PublishArgs {
 }
 
 /**
- * Publish a single claimed outbox row.
- *
- * The outer runOnce loop owns the error-to-retry plumbing: any exception
- * thrown by `registry.channel.publishMessage` propagates out of `publish()`
- * so the supervisor can route the error to `retry.handleFailure` under the
- * row's current claim_token.
- *
- * Dead-path transitions (nil-row source event, missing registry entry,
- * shredded-aggregate reconstruction) complete here: mark `dead_at` via
- * `fencedUpdate`, dispatch `onDead`, and return `'dead'`. The row is out of
- * the FIFO eligibility set from this point forward.
+ * Publish a single claimed outbox row. Publish-channel exceptions propagate
+ * to `runOnce` → `retry.handleFailure`. Dead-path transitions (nil-row,
+ * missing registry entry, shredded-aggregate) complete here via
+ * `fencedUpdate` + `dispatchOnDead` and return `'dead'`.
  */
 export const publish = async ({
   row,
@@ -150,7 +141,18 @@ const publishInner = async (
     outboxTable: ctx.outboxTable,
     rowId: row.id,
     currentClaimToken: requireClaimToken(row),
-    set: { processedAt: dialectNow(ctx.dialect) },
+    set: {
+      processedAt: dialectNow(ctx.dialect),
+      // Release the claim on the successful-processed path so default-safe
+      // admin helpers (`retryRow`, `deleteRow`) — which gate on
+      // `claim_token IS NULL` — do not treat an already-processed row as
+      // "currently claimed by a worker". Symmetric to the dead-transition
+      // release below. The fencing predicate (`WHERE claim_token =
+      // currentClaimToken`) still guards this UPDATE against a concurrent
+      // TTL-reclaim; only what we write on success changes.
+      claimToken: null,
+      claimedAt: null,
+    },
   });
 
   return affected === 0 ? 'fenced-no-op' : 'ok';

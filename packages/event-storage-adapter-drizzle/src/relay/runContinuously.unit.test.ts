@@ -16,6 +16,7 @@ import type { EventDetail, OutboxCapability } from '@castore/core';
 import type { OutboxRow, RelayRegistryEntry } from '../common/outbox/types';
 import { claimSqlite } from '../sqlite/outbox/claim';
 import { outboxTable } from '../sqlite/schema';
+import { NonRetriableRelayError } from './errors';
 import { makeStop, runContinuously } from './runContinuously';
 import type { RelayState } from './runOnce';
 
@@ -199,6 +200,27 @@ describe('runContinuously + makeStop', () => {
 
     // The loop rejects with the TypeError rather than silently looping.
     await expect(runContinuously(state)).rejects.toBeInstanceOf(TypeError);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
+  });
+
+  it('supervisor aborts on NonRetriableRelayError thrown by bound claim', async () => {
+    // Simulates the relay's own invariant failures (null claim_token in
+    // publish/retry, unrecognised mysql result shape in fencedUpdate)
+    // propagating up through `claim` — these are deterministic bugs, not
+    // transient DB blips, so the supervisor must re-throw instead of
+    // routing through exponential backoff and looping forever.
+    const invariantClaim: RelayState['claim'] = () => {
+      throw new NonRetriableRelayError(
+        'relay bug: claimed row without claim_token',
+      );
+    };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const state = makeState({ claim: invariantClaim });
+
+    await expect(runContinuously(state)).rejects.toBeInstanceOf(
+      NonRetriableRelayError,
+    );
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
   });

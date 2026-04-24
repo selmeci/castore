@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
+import { NonRetriableRelayError } from '../../relay/errors';
 import { outboxTable } from '../../sqlite/schema';
 import { extractMysqlAffectedRows, fencedUpdate } from './fencedUpdate';
 
@@ -182,7 +183,13 @@ describe('extractMysqlAffectedRows', () => {
     expect(extractMysqlAffectedRows({ affectedRows: 3 })).toBe(3);
   });
 
-  it('throws with function name + truncated preview on unknown shape', () => {
+  it('throws NonRetriableRelayError with function name + truncated preview on unknown shape', () => {
+    // NonRetriableRelayError (not plain Error) so the supervisor in
+    // runContinuously aborts instead of looping forever on a deterministic
+    // driver-shape regression.
+    expect(() => extractMysqlAffectedRows({ rowsAffected: 1 })).toThrow(
+      NonRetriableRelayError,
+    );
     expect(() => extractMysqlAffectedRows({ rowsAffected: 1 })).toThrow(
       /extractMysqlAffectedRows.*rowsAffected/,
     );

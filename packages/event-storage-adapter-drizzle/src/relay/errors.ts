@@ -133,3 +133,45 @@ export class UnsupportedChannelTypeError extends Error {
     this.eventStoreId = eventStoreId;
   }
 }
+
+/**
+ * Thrown by `runContinuously()` when it is invoked on a relay whose `stop()`
+ * has already been called. `stop()` is permanent: it latches a durable flag
+ * on the relay state so a subsequent `runContinuously()` cannot silently
+ * start a fresh loop — including the pre-start case where `stop()` was
+ * called before `runContinuously()` was ever invoked. Construct a fresh
+ * `createOutboxRelay()` to resume publishing.
+ */
+export class RelayStoppedError extends Error {
+  readonly name = 'RelayStoppedError';
+
+  constructor() {
+    super(
+      'relay has been stopped — construct a fresh createOutboxRelay() to restart',
+    );
+  }
+}
+
+/**
+ * Thrown by the relay when one of its own internal invariants is violated —
+ * e.g. a claimed row reaching the publish path without a `claim_token`, or
+ * the mysql driver returning an unrecognised result shape from an
+ * `UPDATE`. These are *deterministic* bugs in the relay (or in a consumer
+ * that drove it off-contract), not transient DB conditions: retrying with
+ * backoff will never clear them, it will just spin the worker forever.
+ *
+ * Raising this class (rather than a plain `Error`) lets
+ * `runContinuously`'s supervisor classifier treat the failure like the
+ * built-in programming errors (`TypeError`, `RangeError`, …): re-throw out
+ * of the loop so the runtime manager can restart on fixed code or page an
+ * operator. Supervisors / process managers consuming the relay can also
+ * `instanceof`-match this class to distinguish "relay bug" from any plain
+ * `Error` surfaced by a consumer channel.
+ */
+export class NonRetriableRelayError extends Error {
+  readonly name = 'NonRetriableRelayError';
+
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+  }
+}

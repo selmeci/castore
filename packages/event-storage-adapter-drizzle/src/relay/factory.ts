@@ -15,7 +15,7 @@ import {
   type DeleteRowOptions,
   type RetryRowOptions,
 } from './admin';
-import { OutboxNotEnabledError } from './errors';
+import { OutboxNotEnabledError, RelayStoppedError } from './errors';
 import {
   buildRegistryMap,
   DEFAULT_RELAY_OPTIONS,
@@ -111,6 +111,14 @@ export const createOutboxRelay = (args: CreateOutboxRelayArgs): OutboxRelay => {
   return {
     runOnce: () => runOnce(state),
     runContinuously: () => {
+      // `stop()` is permanent (pre-start OR post-start): the durable
+      // `state.stopped` flag latches on every `stop()` call and is never
+      // cleared. Refusing to start here is what makes a stop-before-start
+      // sequence observable instead of silently dropping the intent, and
+      // matches the documented "construct a fresh relay to re-run" contract.
+      if (state.stopped === true) {
+        throw new RelayStoppedError();
+      }
       // Reject re-entry while a loop is in flight. Silently overwriting
       // `loopPromise` would orphan the first loop (still running, no longer
       // awaited by `stop()`) and double the publish load until the shared
@@ -130,14 +138,23 @@ export const createOutboxRelay = (args: CreateOutboxRelayArgs): OutboxRelay => {
     },
     stop: async () => {
       if (loopPromise === undefined) {
-        // stop() called before runContinuously(): latch the flag so a
-        // later runContinuously() is also a no-op via the re-entry check
-        // above. Callers who want to re-run must construct a fresh relay.
+        // stop() called before runContinuously(): latch both flags. A
+        // later runContinuously() will throw RelayStoppedError via the
+        // entry check above; callers who want to re-run must construct
+        // a fresh relay.
         state.stopping = true;
+        state.stopped = true;
 
         return;
       }
       await makeStop(state, loopPromise).stop();
+      // Latch the durable flag AFTER the loop has unwound so a second
+      // runContinuously() on this same instance also throws. Option (a)
+      // semantics: stop() is permanent in both directions. The in-flight
+      // `stopping` boolean is not sufficient — `runContinuously()` resets
+      // it on entry to support the re-entry guard, so the durable flag is
+      // what keeps the "no restart" contract honest.
+      state.stopped = true;
       loopPromise = undefined;
     },
     retryRow: (rowId, retryOptions) =>

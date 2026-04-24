@@ -167,6 +167,64 @@ describe('publish', () => {
     expect(persisted?.processed_at).not.toBeNull();
   });
 
+  it('successful publish releases the claim_token/claimed_at alongside processed_at', async () => {
+    // Regression for the symmetric release-on-processed fix. The
+    // dead-transition path already nulls claim_token/claimed_at so
+    // default-safe `retryRow` accepts a dead row without force; the
+    // successful-processed path must do the same, otherwise a processed
+    // row with a populated claim_token is rejected by `retryRow` /
+    // `deleteRow` (WHERE ... AND claim_token IS NULL) as if a worker
+    // were still holding it — even though the publish is complete.
+    const row = makeRow();
+    await seedRow(row);
+
+    const event: EventDetail = {
+      aggregateId: row.aggregate_id,
+      version: row.version,
+      type: 'COUNTER_INCREMENTED',
+      timestamp: '2026-04-20T00:00:00.000Z',
+    };
+    const adapter = makeAdapter(async () => event);
+
+    const bus = makeNotificationBus();
+    vi.spyOn(bus, 'publishMessage').mockResolvedValue();
+
+    const result = await publish({
+      row,
+      registry: new Map([
+        [
+          'counters',
+          {
+            eventStoreId: 'counters',
+            connectedEventStore: new ConnectedEventStore(
+              counterEventStore,
+              bus,
+            ),
+            channel: bus,
+          },
+        ],
+      ]),
+      ctx: { ...ctx(), adapter },
+      hooks: {},
+      publishTimeoutMs: 10_000,
+    });
+
+    expect(result).toBe('ok');
+
+    const [persisted] = bs
+      .prepare(
+        'SELECT processed_at, claim_token, claimed_at FROM castore_outbox WHERE id = ?',
+      )
+      .all(row.id) as {
+      processed_at: string | null;
+      claim_token: string | null;
+      claimed_at: string | null;
+    }[];
+    expect(persisted?.processed_at).not.toBeNull();
+    expect(persisted?.claim_token).toBeNull();
+    expect(persisted?.claimed_at).toBeNull();
+  });
+
   it('builds a StateCarrying envelope with the reconstructed aggregate', async () => {
     const row = makeRow({ version: 2 });
     await seedRow(row);

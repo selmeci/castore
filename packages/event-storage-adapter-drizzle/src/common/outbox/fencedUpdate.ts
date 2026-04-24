@@ -1,5 +1,7 @@
 import { and, eq, sql } from 'drizzle-orm';
 
+import { NonRetriableRelayError } from '../../relay/errors';
+
 /**
  * Dialects the fenced-UPDATE helper knows how to dispatch to. The dialect
  * string drives result-shape normalisation — pg and sqlite support
@@ -105,6 +107,11 @@ const stringifyForError = (value: unknown): string => {
  * returning 0 would look identical to "row fenced out" (fence no-op) when
  * it's actually "driver shape changed and we can't tell what happened",
  * which could mask real UPDATE failures.
+ *
+ * Raised as `NonRetriableRelayError` so `runContinuously`'s supervisor
+ * aborts the loop instead of looping forever on a deterministic
+ * driver-shape regression (transient backoff cannot clear a code/driver
+ * mismatch).
  */
 export const extractMysqlAffectedRows = (result: unknown): number => {
   if (Array.isArray(result)) {
@@ -121,7 +128,7 @@ export const extractMysqlAffectedRows = (result: unknown): number => {
     }
   }
 
-  throw new Error(
+  throw new NonRetriableRelayError(
     `extractMysqlAffectedRows: unknown mysql driver result shape; expected [ResultSetHeader, FieldPacket[]] or a header-like object carrying numeric affectedRows, got: ${stringifyForError(result)}`,
   );
 };

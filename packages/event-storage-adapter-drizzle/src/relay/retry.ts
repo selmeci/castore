@@ -6,6 +6,7 @@ import type {
   RelayHooks,
   RelayOptions,
 } from '../common/outbox/types';
+import { NonRetriableRelayError } from './errors';
 import { dispatchOnDead, dispatchOnFail } from './hooks';
 import type { RelayPublishContext } from './publish';
 
@@ -64,7 +65,12 @@ export const handleFailure = async ({
   }
 
   if (row.claim_token === null) {
-    throw new Error(
+    // Invariant: the supervisor only routes into `handleFailure` for rows
+    // that were successfully claimed, so `claim_token` must be set. A null
+    // here is a deterministic bug in the relay, not a transient DB blip —
+    // raise the non-retriable class so `runContinuously` aborts instead
+    // of looping on fixed code.
+    throw new NonRetriableRelayError(
       `handleFailure received outbox row ${row.id} without a claim_token — invariant violation.`,
     );
   }

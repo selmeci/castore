@@ -31,6 +31,16 @@ export interface RelayState {
   /** Mutated by `stop()` to halt `runContinuously`. */
   stopping: boolean;
   /**
+   * Durable counterpart to `stopping`. Latched to `true` by every `stop()`
+   * call (pre-start early-return AND post-loop completion) and never
+   * cleared for the lifetime of the relay. `runContinuously()`'s entry
+   * check throws `RelayStoppedError` when it is set, so a caller who
+   * `stop()`s before ever starting — or who tries to restart after a
+   * completed stop — gets a loud failure instead of a silently-dropped
+   * intent or a surprise fresh loop. Construct a new relay to resume.
+   */
+  stopped?: boolean;
+  /**
    * Aborted by `stop()` in addition to flipping `stopping = true`. The
    * `runContinuously` sleep awaits this signal alongside its `setTimeout`
    * so shutdown wakes instantly instead of waiting up to one `pollingMs`
