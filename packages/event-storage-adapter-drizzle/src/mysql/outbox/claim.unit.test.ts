@@ -221,6 +221,31 @@ describe('claimMysql', () => {
     expect(rows[0]?.aggregate_name).toBe('in-registry');
   });
 
+  it('respects the batchSize cap when more eligible rows exist', async () => {
+    for (let i = 0; i < 7; i++) {
+      await seed({
+        aggregateName: 'store',
+        aggregateId: `agg-${i}`,
+        version: 1,
+      });
+    }
+
+    const rows = await claimMysql({
+      db,
+      outboxTable,
+      batchSize: 3,
+      claimTimeoutMs: 60_000,
+      workerClaimToken: 't',
+      aggregateNames: ['store'],
+    });
+
+    expect(rows).toHaveLength(3);
+    const [result] = await connection.query(
+      `SELECT COUNT(*) AS c FROM castore_outbox WHERE claim_token IS NULL`,
+    );
+    expect(Number((result as { c: number }[])[0]?.c)).toBe(4);
+  });
+
   it('skips processed and dead rows', async () => {
     await seed({
       aggregateName: 'store',

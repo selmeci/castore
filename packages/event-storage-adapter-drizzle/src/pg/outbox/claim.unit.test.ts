@@ -232,6 +232,31 @@ describe('claimPg', () => {
     expect(winnerRows[0]?.version).toBe(1);
   });
 
+  it('respects the batchSize cap when more eligible rows exist', async () => {
+    for (let i = 0; i < 7; i++) {
+      await seed({
+        aggregateName: 'store',
+        aggregateId: `agg-${i}`,
+        version: 1,
+      });
+    }
+
+    const rows = await claimPg({
+      db,
+      outboxTable,
+      batchSize: 3,
+      claimTimeoutMs: 60_000,
+      workerClaimToken: 't',
+      aggregateNames: ['store'],
+    });
+
+    expect(rows).toHaveLength(3);
+    const unclaimed = (await db.execute(
+      sql`SELECT COUNT(*)::int AS c FROM castore_outbox WHERE claim_token IS NULL`,
+    )) as unknown as { c: number }[];
+    expect(Number(unclaimed[0]?.c)).toBe(4);
+  });
+
   it('skips processed and dead rows', async () => {
     await seed({
       aggregateName: 'store',

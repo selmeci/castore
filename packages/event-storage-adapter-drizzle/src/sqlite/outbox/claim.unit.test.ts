@@ -208,6 +208,38 @@ describe('claimSqlite', () => {
     expect(rows[0]?.claim_token).toBe('worker-1');
   });
 
+  it('respects the batchSize cap when more eligible rows exist', async () => {
+    // Seed 7 rows across 7 aggregates (avoids FIFO blocking — each
+    // aggregate has only v1), request batchSize 3.
+    for (let i = 0; i < 7; i++) {
+      await seed({
+        aggregateName: 'store',
+        aggregateId: `agg-${i}`,
+        version: 1,
+      });
+    }
+
+    const rows = await claimSqlite({
+      db,
+      outboxTable,
+      batchSize: 3,
+      claimTimeoutMs: 60_000,
+      workerClaimToken: 't',
+      aggregateNames: ['store'],
+    });
+
+    expect(rows).toHaveLength(3);
+    // The remaining 4 rows stay unclaimed.
+    const unclaimed = (
+      bs
+        .prepare(
+          'SELECT COUNT(*) AS c FROM castore_outbox WHERE claim_token IS NULL',
+        )
+        .get() as { c: number }
+    ).c;
+    expect(unclaimed).toBe(4);
+  });
+
   it('skips processed rows and rows in dead state', async () => {
     await seed({
       aggregateName: 'store',

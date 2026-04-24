@@ -223,6 +223,50 @@ describe('runOnce', () => {
     expect(persisted.dead_at).not.toBeNull();
   });
 
+  it('accumulates mixed outcomes across the batch — continues after per-row failures', async () => {
+    await seedRow('a', 1);
+    await seedRow('b', 1);
+    await seedRow('c', 1);
+
+    // Middle row throws; first and third succeed. The loop must not
+    // abort — it must keep processing and end with processed=2, failed=1.
+    let calls = 0;
+    const { state, publishSpy } = makeState({
+      publishFn: async () => {
+        calls += 1;
+        if (calls === 2) {
+          throw new Error('bus blip on row 2');
+        }
+      },
+    });
+
+    const result = await runOnce(state);
+    expect(result.claimed).toBe(3);
+    expect(result.processed).toBe(2);
+    expect(result.failed).toBe(1);
+    expect(publishSpy).toHaveBeenCalledTimes(3);
+
+    const processedCount = (
+      bs
+        .prepare(
+          'SELECT COUNT(*) AS c FROM castore_outbox WHERE processed_at IS NOT NULL',
+        )
+        .get() as { c: number }
+    ).c;
+    expect(processedCount).toBe(2);
+
+    // Failed row had attempts incremented and claim released for retry.
+    const failedCount = (
+      bs
+        .prepare(
+          `SELECT COUNT(*) AS c FROM castore_outbox
+           WHERE processed_at IS NULL AND attempts > 0 AND claim_token IS NULL`,
+        )
+        .get() as { c: number }
+    ).c;
+    expect(failedCount).toBe(1);
+  });
+
   it('honours state.stopping mid-batch — remaining rows stay claimed', async () => {
     await seedRow('a', 1);
     await seedRow('b', 1);

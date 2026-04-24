@@ -119,7 +119,44 @@ describe('handleFailure', () => {
       nextBackoffMs: number;
     };
     expect(call.attempts).toBe(1);
-    expect(call.nextBackoffMs).toBeGreaterThan(0);
+    // First-attempt backoff is baseMs (100) ± 25% jitter. Tight range asserts
+    // the exponent is interpreted as attempts-1 (not attempts) and baseMs is
+    // actually honored — a regression that returned a constant would escape
+    // a bare `toBeGreaterThan(0)` assertion.
+    expect(call.nextBackoffMs).toBeGreaterThanOrEqual(75);
+    expect(call.nextBackoffMs).toBeLessThanOrEqual(125);
+  });
+
+  it('nextBackoffMs scales exponentially and clamps to ceilingMs', async () => {
+    // Attempts=1 → baseMs=100 (±25% jitter → 75-125).
+    // Attempts=5 → 100 * 2^4 = 1600 (±25% jitter → 1200-2000).
+    // Attempts=50 → clamped to ceilingMs=30_000 (±25% jitter → 22_500-37_500).
+    const onFail = vi.fn();
+    const tierOptions = { baseMs: 100, ceilingMs: 30_000, maxAttempts: 100 };
+
+    for (const attempts of [1, 5, 50]) {
+      const row = makeRow({ attempts: attempts - 1 });
+      await seedRow(row);
+      await handleFailure({
+        row,
+        error: new Error('boom'),
+        ctx: ctx(),
+        hooks: { onFail },
+        options: tierOptions,
+      });
+      // Reset DB for next iteration.
+      bs.prepare('DELETE FROM castore_outbox').run();
+    }
+
+    const callMs = (i: number): number =>
+      (onFail.mock.calls[i]?.[0] as unknown as { nextBackoffMs: number })
+        .nextBackoffMs;
+    expect(callMs(0)).toBeGreaterThanOrEqual(75);
+    expect(callMs(0)).toBeLessThanOrEqual(125);
+    expect(callMs(1)).toBeGreaterThanOrEqual(1200);
+    expect(callMs(1)).toBeLessThanOrEqual(2000);
+    expect(callMs(2)).toBeGreaterThanOrEqual(22_500);
+    expect(callMs(2)).toBeLessThanOrEqual(37_500);
   });
 
   it('transitions to dead when attempts reach maxAttempts and calls onDead', async () => {

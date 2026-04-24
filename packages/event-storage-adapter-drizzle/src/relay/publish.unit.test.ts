@@ -216,6 +216,67 @@ describe('publish', () => {
     });
   });
 
+  it('transitions to dead when StateCarrying reconstruction yields undefined aggregate', async () => {
+    const row = makeRow({ version: 2 });
+    await seedRow(row);
+
+    const event = {
+      aggregateId: row.aggregate_id,
+      version: 2,
+      type: 'COUNTER_INCREMENTED' as const,
+      timestamp: '2026-04-20T00:00:00.000Z',
+    };
+    const adapter = makeAdapter(async () => event);
+
+    const bus = makeStateCarryingBus();
+    const publishMessage = vi.spyOn(bus, 'publishMessage');
+
+    // Simulate crypto-shredded aggregate: event row exists (lookup returns
+    // it) but every event the aggregate needs has been wiped, so
+    // getAggregate returns aggregate=undefined. publish() must route this
+    // to the same dead path as a nil-row miss.
+    const ces = new ConnectedEventStore(counterEventStore, bus);
+    vi.spyOn(ces, 'getAggregate').mockResolvedValue({
+      aggregate: undefined as unknown as CounterAggregate,
+      events: [],
+      lastEvent: undefined,
+    });
+
+    const onDead = vi.fn();
+
+    const result = await publish({
+      row,
+      registry: new Map([
+        [
+          'counters',
+          {
+            eventStoreId: 'counters',
+            connectedEventStore: ces,
+            channel: bus,
+          },
+        ],
+      ]),
+      ctx: { ...ctx(), adapter },
+      hooks: { onDead },
+      publishTimeoutMs: 10_000,
+    });
+
+    expect(result).toBe('dead');
+    expect(publishMessage).not.toHaveBeenCalled();
+    expect(onDead).toHaveBeenCalledWith({
+      row,
+      lastError: 'aggregate reconstruction returned no events',
+    });
+
+    const [persisted] = bs
+      .prepare('SELECT dead_at, last_error FROM castore_outbox WHERE id = ?')
+      .all(row.id) as { dead_at: string | null; last_error: string | null }[];
+    expect(persisted?.dead_at).not.toBeNull();
+    expect(persisted?.last_error).toBe(
+      'aggregate reconstruction returned no events',
+    );
+  });
+
   it('transitions to dead when source event row is missing (nil-row)', async () => {
     const row = makeRow();
     await seedRow(row);
