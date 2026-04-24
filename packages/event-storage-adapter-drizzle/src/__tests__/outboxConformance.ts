@@ -6,12 +6,13 @@ import {
   ConnectedEventStore,
   EventStore,
   EventType,
+  GroupedEvent,
   NotificationMessageBus,
   type EventDetail,
   type EventStorageAdapter,
 } from '@castore/core';
 
-import { dialectNow } from '../common/outbox/fencedUpdate';
+import { dialectNow, fencedUpdate } from '../common/outbox/fencedUpdate';
 import {
   selectOutboxColumns,
   type OutboxColumnTable,
@@ -25,7 +26,9 @@ import {
   createOutboxRelay,
   DuplicateEventStoreIdError,
   InvalidPublishTimeoutError,
+  OutboxRowNotFoundError,
   RegistryEntryMismatchError,
+  RetryRowClaimedError,
 } from '../relay';
 import type { BoundClaim, OutboxDialect } from '../relay';
 
@@ -57,6 +60,8 @@ export interface OutboxConformanceSetupResult<
   backdateClaimedAt: (rowId: string, msAgo: number) => Promise<void>;
   /** Dialect-specific introspection of the `outbox_aggregate_version_uq` unique constraint. */
   uniqueConstraintExists: () => Promise<boolean>;
+  /** Delete the event row for an aggregateId via dialect-appropriate raw SQL. Used by nil-row dead path scenarios that simulate out-of-band event deletion. */
+  deleteEventRow: (aggregateId: string) => Promise<void>;
 }
 
 export interface OutboxConformanceSetup<
@@ -398,6 +403,421 @@ export const makeOutboxConformanceSuite = <
         expect(row?.claim_token).toBeNull();
         expect(row?.claimed_at).toBeNull();
         expect(row?.dead_at).toBeNull();
+      });
+    });
+
+    describe('pushEventGroup atomicity (R7)', () => {
+      it('commits event + outbox rows for every grouped event atomically', async () => {
+        const aggregateA = randomUUID();
+        const aggregateB = randomUUID();
+        const ts = '2021-01-01T00:00:00.000Z';
+        const groupA = new GroupedEvent({
+          event: {
+            aggregateId: aggregateA,
+            version: 1,
+            type: 'COUNTER_INCREMENTED',
+            timestamp: ts,
+          },
+          eventStorageAdapter: ctx.adapter,
+          context: { eventStoreId: ctx.connectedEventStore.eventStoreId },
+        });
+        const groupB = new GroupedEvent({
+          event: {
+            aggregateId: aggregateB,
+            version: 1,
+            type: 'COUNTER_INCREMENTED',
+            timestamp: ts,
+          },
+          eventStorageAdapter: ctx.adapter,
+          context: { eventStoreId: ctx.connectedEventStore.eventStoreId },
+        });
+
+        await ctx.adapter.pushEventGroup({}, groupA, groupB);
+
+        const rowA = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateA,
+          1,
+        );
+        const rowB = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateB,
+          1,
+        );
+        expect(rowA).toBeDefined();
+        expect(rowB).toBeDefined();
+      });
+
+      it('rolls back event + outbox rows when a mid-group push fails', async () => {
+        const aggregateA = randomUUID();
+        const aggregateB = randomUUID();
+        const ts = '2021-01-01T00:00:00.000Z';
+
+        // Pre-seed a duplicate for aggregateB v1 so the second pushEventInTx
+        // fires a unique-constraint violation and the whole transaction
+        // rolls back. The first event+outbox rows for aggregateA must NOT
+        // survive.
+        await pushCounterEvent(ctx.connectedEventStore, aggregateB, 1, ts);
+
+        const groupA = new GroupedEvent({
+          event: {
+            aggregateId: aggregateA,
+            version: 1,
+            type: 'COUNTER_INCREMENTED',
+            timestamp: ts,
+          },
+          eventStorageAdapter: ctx.adapter,
+          context: { eventStoreId: ctx.connectedEventStore.eventStoreId },
+        });
+        const groupB = new GroupedEvent({
+          event: {
+            aggregateId: aggregateB,
+            version: 1,
+            type: 'COUNTER_INCREMENTED',
+            timestamp: ts,
+          },
+          eventStorageAdapter: ctx.adapter,
+          context: { eventStoreId: ctx.connectedEventStore.eventStoreId },
+        });
+
+        await expect(
+          ctx.adapter.pushEventGroup({}, groupA, groupB),
+        ).rejects.toThrow();
+
+        const rowA = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateA,
+          1,
+        );
+        expect(rowA).toBeUndefined();
+      });
+    });
+
+    describe('fencing-token correctness (R14)', () => {
+      it('slow worker A is fenced out after worker B TTL-reclaims', async () => {
+        // Load-bearing invariant: worker A claims row and begins publish;
+        // worker B reclaims after TTL; worker A's subsequent mark-processed
+        // MUST no-op (fencedUpdate returns 0) rather than double-stamp the
+        // row. Without the fencing predicate this would silently double-
+        // publish.
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const claimedA = await ctx.claim({
+          workerClaimToken: 'worker-A',
+          aggregateNames: [ctx.connectedEventStore.eventStoreId],
+          batchSize: 1,
+          claimTimeoutMs: 60_000,
+        });
+        expect(claimedA).toHaveLength(1);
+        const rowId = claimedA[0]!.id;
+
+        // Simulate worker A's publish being slow enough that worker B's TTL
+        // reclaim fires first.
+        await ctx.backdateClaimedAt(rowId, 10 * 60_000);
+        const claimedB = await ctx.claim({
+          workerClaimToken: 'worker-B',
+          aggregateNames: [ctx.connectedEventStore.eventStoreId],
+          batchSize: 1,
+          claimTimeoutMs: 60_000,
+        });
+        expect(claimedB).toHaveLength(1);
+        expect(claimedB[0]!.id).toBe(rowId);
+
+        // Worker A's stale fencedUpdate returns 0 affected rows — NOT 1.
+        const affectedA = await fencedUpdate({
+          dialect: dialectName,
+          db: ctx.db,
+          outboxTable: ctx.outboxTable,
+          rowId,
+          currentClaimToken: 'worker-A',
+          set: { processedAt: dialectNow(dialectName) },
+        });
+        expect(affectedA).toBe(0);
+
+        // Worker B's fencedUpdate still succeeds.
+        const affectedB = await fencedUpdate({
+          dialect: dialectName,
+          db: ctx.db,
+          outboxTable: ctx.outboxTable,
+          rowId,
+          currentClaimToken: 'worker-B',
+          set: { processedAt: dialectNow(dialectName) },
+        });
+        expect(affectedB).toBe(1);
+
+        // Final state: processed_at stamped exactly once (by B).
+        const row = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(row?.processed_at).not.toBeNull();
+      });
+    });
+
+    describe('dead state + retry (R16, R17, R19)', () => {
+      it('transitions to dead_at after maxAttempts failures; onDead fires once; onFail fires maxAttempts-1 times', async () => {
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const { registry } = buildRegistry();
+        const publishSpy = vi
+          .spyOn(ctx.channel, 'publishMessage')
+          .mockRejectedValue(new Error('bus unavailable: ignite the retry'));
+        const onDead = vi.fn();
+        const onFail = vi.fn();
+        const maxAttempts = 3;
+
+        const relay = makeRelay(registry, {
+          hooks: { onDead, onFail },
+          options: { maxAttempts, baseMs: 1, ceilingMs: 10 },
+        });
+
+        // Each runOnce increments attempts and reclaims on next call (the
+        // failed row releases claim_token via the retry path). After
+        // maxAttempts runs the row transitions to dead_at.
+        for (let i = 0; i < maxAttempts; i += 1) {
+          await relay.runOnce();
+        }
+
+        const row = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(row?.dead_at).not.toBeNull();
+        expect(row?.attempts).toBe(maxAttempts);
+        expect(row?.last_error).toContain('bus unavailable');
+        expect(onDead).toHaveBeenCalledTimes(1);
+        expect(onFail).toHaveBeenCalledTimes(maxAttempts - 1);
+        expect(publishSpy).toHaveBeenCalledTimes(maxAttempts);
+      });
+
+      it('nil-row dead path: missing event row → immediate dead_at on claim', async () => {
+        // R10 — the relay looks up the source event via
+        // `adapter[OUTBOX_GET_EVENT_SYMBOL]`; if the event row was deleted
+        // out-of-band between commit and claim, the publish path must
+        // dead-transition the outbox row rather than retry forever.
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        // Delete the event row directly; the outbox pointer is left behind.
+        // Per-dialect setup owns the raw SQL.
+        await ctx.deleteEventRow(aggregateId);
+
+        const { registry } = buildRegistry();
+        const onDead = vi.fn();
+        const relay = makeRelay(registry, { hooks: { onDead } });
+
+        const result = await relay.runOnce();
+        expect(result.dead).toBe(1);
+        expect(onDead).toHaveBeenCalledTimes(1);
+
+        const row = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(row?.dead_at).not.toBeNull();
+        expect(row?.claim_token).toBeNull();
+      });
+
+      it('dead row blocks newer same-aggregate rows; retryRow unblocks without force', async () => {
+        // R16 — FIFO block by design: v2 must not claim while v1 is dead.
+        // After retryRow (default-safe — no force:true — because relay-core
+        // fix d115927 releases claim_token on dead transition), the retried
+        // row becomes eligible again and unblocks v2.
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 2);
+
+        // Drive v1 to dead.
+        const { registry } = buildRegistry();
+        vi.spyOn(ctx.channel, 'publishMessage').mockRejectedValue(
+          new Error('bus down'),
+        );
+        const relay = makeRelay(registry, {
+          options: { maxAttempts: 1, baseMs: 1, ceilingMs: 10 },
+        });
+        await relay.runOnce();
+
+        const v1Dead = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(v1Dead?.dead_at).not.toBeNull();
+
+        // v2 must NOT claim while v1 is dead (FIFO block).
+        const blocked = await ctx.claim({
+          workerClaimToken: 'blocked',
+          aggregateNames: [ctx.connectedEventStore.eventStoreId],
+          batchSize: 10,
+          claimTimeoutMs: 60_000,
+        });
+        expect(blocked.find(r => r.version === 2)).toBeUndefined();
+
+        // retryRow on the dead v1 succeeds without force:true.
+        const retryResult = await relay.retryRow(v1Dead!.id);
+        expect(retryResult.warning).toBe('at-most-once-not-guaranteed');
+        expect(retryResult.rowId).toBe(v1Dead!.id);
+        expect(retryResult.forced).toBe(false);
+
+        const v1Retried = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(v1Retried?.dead_at).toBeNull();
+
+        // Now v1 AND v2 are eligible. Next runOnce can claim both.
+        vi.restoreAllMocks();
+        vi.spyOn(ctx.channel, 'publishMessage').mockResolvedValue(
+          undefined as never,
+        );
+        const result = await relay.runOnce();
+        expect(result.processed).toBeGreaterThan(0);
+      });
+    });
+
+    describe('admin API (R20)', () => {
+      it('retryRow default-safe rejects live-claim rows; force:true bypasses', async () => {
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const claimed = await ctx.claim({
+          workerClaimToken: 'live',
+          aggregateNames: [ctx.connectedEventStore.eventStoreId],
+          batchSize: 10,
+          claimTimeoutMs: 60_000,
+        });
+        expect(claimed).toHaveLength(1);
+        const rowId = claimed[0]!.id;
+
+        const { registry } = buildRegistry();
+        const relay = makeRelay(registry);
+
+        await expect(relay.retryRow(rowId)).rejects.toBeInstanceOf(
+          RetryRowClaimedError,
+        );
+
+        const forced = await relay.retryRow(rowId, { force: true });
+        expect(forced.forced).toBe(true);
+        expect(forced.warning).toBe('at-most-once-not-guaranteed');
+      });
+
+      it('deleteRow removes outbox row leaving event row untouched', async () => {
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+        const row = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+
+        const { registry } = buildRegistry();
+        const relay = makeRelay(registry);
+
+        const result = await relay.deleteRow(row!.id);
+        expect(result.rowId).toBe(row!.id);
+
+        // Outbox row is gone.
+        const after = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(after).toBeUndefined();
+
+        // Event row still present.
+        const { events } = await ctx.adapter.getEvents(aggregateId, {
+          eventStoreId: ctx.connectedEventStore.eventStoreId,
+        });
+        expect(events).toHaveLength(1);
+      });
+
+      it('deleteRow default-safe rejects live-claim; force:true bypasses', async () => {
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const claimed = await ctx.claim({
+          workerClaimToken: 'live',
+          aggregateNames: [ctx.connectedEventStore.eventStoreId],
+          batchSize: 10,
+          claimTimeoutMs: 60_000,
+        });
+        const rowId = claimed[0]!.id;
+
+        const { registry } = buildRegistry();
+        const relay = makeRelay(registry);
+
+        await expect(relay.deleteRow(rowId)).rejects.toBeInstanceOf(
+          RetryRowClaimedError,
+        );
+
+        const forced = await relay.deleteRow(rowId, { force: true });
+        expect(forced.rowId).toBe(rowId);
+      });
+
+      it('retryRow / deleteRow throw OutboxRowNotFoundError for unknown rowId', async () => {
+        const { registry } = buildRegistry();
+        const relay = makeRelay(registry);
+        const ghostId = randomUUID();
+
+        await expect(relay.retryRow(ghostId)).rejects.toBeInstanceOf(
+          OutboxRowNotFoundError,
+        );
+        await expect(relay.deleteRow(ghostId)).rejects.toBeInstanceOf(
+          OutboxRowNotFoundError,
+        );
+      });
+    });
+
+    describe('scrubber at DB boundary (R17)', () => {
+      it('persists a scrubbed + truncated last_error that round-trips through the DB column', async () => {
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        // Error message contains a payload-like JSON fragment so the
+        // scrubber has something to redact; long enough to hit the 2048
+        // cap when the raw message + redacted JSON exceeds it.
+        const secretPayload = { ssn: '123-45-6789', card: '4111111111111111' };
+        const repeatedTail = 'x'.repeat(3000);
+        const err = new Error(
+          `publish failed for payload=${JSON.stringify(secretPayload)} trailing=${repeatedTail}`,
+        );
+
+        const { registry } = buildRegistry();
+        vi.spyOn(ctx.channel, 'publishMessage').mockRejectedValue(err);
+        const relay = makeRelay(registry, {
+          options: { maxAttempts: 1, baseMs: 1, ceilingMs: 10 },
+        });
+        await relay.runOnce();
+
+        const row = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(row?.last_error).toBeDefined();
+        const lastError = row!.last_error!;
+        // mysql varchar(2048) + other dialects cap at 2048.
+        expect(lastError.length).toBeLessThanOrEqual(2048);
+        // JSON-fragment leaves redacted — original PII NOT leaked.
+        expect(lastError).not.toContain('123-45-6789');
+        expect(lastError).not.toContain('4111111111111111');
       });
     });
   });

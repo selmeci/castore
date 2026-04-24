@@ -195,6 +195,11 @@ makeOutboxConformanceSuite({
 
         return false;
       },
+      deleteEventRow: async (aggregateId: string) => {
+        ocBsDb
+          .prepare(`DELETE FROM event WHERE aggregate_id = ?`)
+          .run(aggregateId);
+      },
     };
   },
   teardown: async () => {

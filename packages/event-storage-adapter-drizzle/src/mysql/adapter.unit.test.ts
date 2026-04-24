@@ -144,6 +144,11 @@ makeOutboxConformanceSuite({
 
         return rows.length > 0;
       },
+      deleteEventRow: async (aggregateId: string) => {
+        await connection.query(`DELETE FROM event WHERE aggregate_id = ?`, [
+          aggregateId,
+        ]);
+      },
     };
   },
   teardown: async () => {
