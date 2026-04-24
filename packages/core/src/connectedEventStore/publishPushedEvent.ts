@@ -8,6 +8,7 @@ import {
 } from '~/messaging';
 
 import type { ConnectedEventStore } from './connectedEventStore';
+import { isOutboxEnabledAdapter } from './outboxCapability';
 
 export const publishPushedEvent = async <
   CONNECTED_EVENT_STORE extends ConnectedEventStore,
@@ -18,6 +19,15 @@ export const publishPushedEvent = async <
     nextAggregate?: EventStoreAggregate<CONNECTED_EVENT_STORE>;
   },
 ): Promise<void> => {
+  // Outbox short-circuit: when the storage adapter exposes the outbox
+  // capability, the relay — not this fire-and-forget publish — is the sole
+  // source of bus messages. Use the non-throwing property getter rather than
+  // `getEventStorageAdapter()` so the legacy no-adapter path still works
+  // (see origin R30 + the adapter's mutable setter at connectedEventStore.ts).
+  if (isOutboxEnabledAdapter(connectedEventStore.eventStorageAdapter)) {
+    return;
+  }
+
   const { event, nextAggregate } = message;
 
   if (

@@ -1,7 +1,11 @@
 import { and, sql } from 'drizzle-orm';
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 
-import { GroupedEvent } from '@castore/core';
+import {
+  GroupedEvent,
+  OUTBOX_ENABLED_SYMBOL,
+  OUTBOX_GET_EVENT_SYMBOL,
+} from '@castore/core';
 import type {
   EventDetail,
   EventsQueryOptions,
@@ -10,6 +14,7 @@ import type {
   ListAggregateIdsOptions,
   ListAggregateIdsOutput,
   OptionalTimestamp,
+  OutboxGetEventByKey,
   PushEventOptions,
 } from '@castore/core';
 
@@ -29,7 +34,11 @@ import {
 import { parsePageToken } from '../common/pageToken';
 import { makeParseGroupedEvents } from '../common/parseGroupedEvents';
 import { walkErrorCauses } from '../common/walkErrorCauses';
-import type { SqliteEventTableContract } from './contract';
+import type {
+  SqliteEventTableContract,
+  SqliteOutboxTableContract,
+} from './contract';
+import { makeSqliteGetEventByKey } from './outbox/getEventByKey';
 
 type AnySQLiteDatabaseOrTx = BaseSQLiteDatabase<
   'sync' | 'async',
@@ -58,27 +67,77 @@ const coerceSqliteTimestamp = (iso: string): string => iso;
 export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
   private db: AnySQLiteDatabaseOrTx;
   private eventTable: SqliteEventTableContract;
+  private outboxTable?: SqliteOutboxTableContract;
 
-  // Serializes `pushEventGroup` calls on this adapter instance. SQLite does
-  // not nest transactions on a single shared handle, and this adapter wraps
-  // the group in raw `BEGIN` / `COMMIT` statements on `this.db` — so two
-  // overlapping callers would both enter `BEGIN` and corrupt transaction
-  // state. pg/mysql do not need this: Drizzle's `db.transaction()` pulls a
-  // dedicated connection from the pool per call. `.then(run, run)` chains
-  // the next call regardless of the previous result, so a rejected prior
-  // call never poisons later ones; `.catch` on the stored queue swallows
-  // the rejection so the chain stays alive.
-  private pushEventGroupQueue: Promise<unknown> = Promise.resolve();
+  public readonly [OUTBOX_ENABLED_SYMBOL]?: true;
+  public readonly [OUTBOX_GET_EVENT_SYMBOL]?: OutboxGetEventByKey;
+
+  // Serializes `pushEventGroup` (and, in outbox mode, `pushEvent`) calls on
+  // this adapter instance. SQLite does not nest transactions on a single
+  // shared handle, and this adapter wraps writes in raw `BEGIN` / `COMMIT`
+  // statements on `this.db` — so two overlapping callers would both enter
+  // `BEGIN` and corrupt transaction state. pg/mysql do not need this:
+  // Drizzle's `db.transaction()` pulls a dedicated connection from the pool
+  // per call. `.then(run, run)` chains the next call regardless of the
+  // previous result, so a rejected prior call never poisons later ones;
+  // `.catch` on the stored queue swallows the rejection so the chain stays
+  // alive.
+  private txQueue: Promise<unknown> = Promise.resolve();
 
   constructor({
     db,
     eventTable,
+    outbox,
   }: {
     db: BaseSQLiteDatabase<'sync' | 'async', any, any, any>;
     eventTable: SqliteEventTableContract;
+    outbox?: SqliteOutboxTableContract;
   }) {
     this.db = db;
     this.eventTable = eventTable;
+    this.outboxTable = outbox;
+
+    if (outbox !== undefined) {
+      (this as { [OUTBOX_ENABLED_SYMBOL]?: true })[OUTBOX_ENABLED_SYMBOL] =
+        true;
+      (this as { [OUTBOX_GET_EVENT_SYMBOL]?: OutboxGetEventByKey })[
+        OUTBOX_GET_EVENT_SYMBOL
+      ] = makeSqliteGetEventByKey(db, eventTable);
+    }
+  }
+
+  private async insertOutboxRow(
+    tx: AnySQLiteDatabaseOrTx,
+    aggregateName: string,
+    aggregateId: string,
+    version: number,
+  ): Promise<void> {
+    if (this.outboxTable === undefined) {
+      return;
+    }
+    // Idempotent insert on the `(aggregate_name, aggregate_id, version)`
+    // unique index: the outbox row is a pointer to the event row, and by
+    // construction there can only ever be one pointer per event. A plain
+    // insert would violate the unique constraint when `force: true` replays
+    // an already-outboxed event (the event upsert succeeds via ON CONFLICT
+    // DO UPDATE, then this insert would blow up the whole transaction).
+    // Since the relay reads the event payload at publish time, the existing
+    // pointer is sufficient — re-emitting a new row would double-publish
+    // the force-replayed event to the bus with no correctness benefit.
+    await tx
+      .insert(this.outboxTable)
+      .values({
+        aggregateName,
+        aggregateId,
+        version,
+      })
+      .onConflictDoNothing({
+        target: [
+          this.outboxTable.aggregateName,
+          this.outboxTable.aggregateId,
+          this.outboxTable.version,
+        ],
+      });
   }
 
   private buildInsertValues(
@@ -176,14 +235,59 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
       throw new Error('Failed to insert event');
     }
 
-    return { event: buildEventDetail(insertedEvent) };
+    const detail = buildEventDetail(insertedEvent);
+    await this.insertOutboxRow(
+      tx,
+      options.eventStoreId,
+      detail.aggregateId,
+      detail.version,
+    );
+
+    return { event: detail };
   }
 
   async pushEvent(
     eventDetail: OptionalTimestamp<EventDetail>,
     options: PushEventOptions,
   ): Promise<{ event: EventDetail }> {
-    return this.pushEventInTx(this.db, eventDetail, options);
+    if (this.outboxTable === undefined) {
+      return this.pushEventInTx(this.db, eventDetail, options);
+    }
+
+    // Outbox mode: the event-row insert and the outbox-row insert must land
+    // in one transaction. better-sqlite3 rejects promise-returning callbacks
+    // passed to `db.transaction()`, so use the raw `BEGIN`/`COMMIT`/`ROLLBACK`
+    // pattern already used by `pushEventGroup`. Funnel through the shared
+    // `txQueue` so overlapping `pushEvent` + `pushEventGroup` calls do not
+    // both enter `BEGIN` on the same handle.
+    const run = async (): Promise<{ event: EventDetail }> => {
+      await this.db.run(sql`BEGIN`);
+      try {
+        const response = await this.pushEventInTx(
+          this.db,
+          eventDetail,
+          options,
+        );
+        await this.db.run(sql`COMMIT`);
+
+        return response;
+      } catch (err) {
+        try {
+          await this.db.run(sql`ROLLBACK`);
+        } catch (rollbackErr) {
+          console.error(
+            '[DrizzleSqliteEventStorageAdapter] ROLLBACK failed; connection state is undefined:',
+            rollbackErr,
+          );
+        }
+        throw err;
+      }
+    };
+
+    const result = this.txQueue.then(run, run);
+    this.txQueue = result.catch(() => undefined);
+
+    return result;
   }
 
   async getEvents(
@@ -272,8 +376,8 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
       }
     };
 
-    const result = this.pushEventGroupQueue.then(run, run);
-    this.pushEventGroupQueue = result.catch(() => undefined);
+    const result = this.txQueue.then(run, run);
+    this.txQueue = result.catch(() => undefined);
 
     return result;
   }

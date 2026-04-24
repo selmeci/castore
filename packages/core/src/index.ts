@@ -31,6 +31,15 @@ export type {
   Reducer,
 } from './eventStore';
 export { ConnectedEventStore } from './connectedEventStore';
+export {
+  OUTBOX_ENABLED_SYMBOL,
+  OUTBOX_GET_EVENT_SYMBOL,
+  isOutboxEnabledAdapter,
+} from './connectedEventStore/outboxCapability';
+export type {
+  OutboxCapability,
+  OutboxGetEventByKey,
+} from './connectedEventStore/outboxCapability';
 export { Command, tuple } from './command/command';
 export type {
   CommandId,

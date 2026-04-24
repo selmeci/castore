@@ -7,7 +7,12 @@ import mysql from 'mysql2/promise';
 
 import { makeAdapterConformanceSuite } from '../__tests__/conformance';
 import { DrizzleMysqlEventStorageAdapter } from './adapter';
-import { eventColumns, eventTable, eventTableConstraints } from './schema';
+import {
+  eventColumns,
+  eventTable,
+  eventTableConstraints,
+  outboxTable,
+} from './schema';
 
 // Shared testcontainer + mysql2 connection at file scope — the conformance
 // factory and the dialect-local describes below share one running container.
@@ -191,5 +196,87 @@ describe('drizzle mysql storage adapter — extended table', () => {
     expect(String(rows[0]?.correlation_id)).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
     );
+  });
+});
+
+describe('drizzle mysql storage adapter — outbox force-replay idempotency', () => {
+  // Regression test: when `force: true` replays an already-outboxed event,
+  // the outbox-row insert must NOT violate the unique constraint on
+  // (aggregate_name, aggregate_id, version). Before the fix, the event
+  // upsert succeeded via ON DUPLICATE KEY UPDATE but the plain outbox
+  // insert threw ER_DUP_ENTRY and rolled back the whole transaction.
+
+  const eventStoreId = 'eventStoreId';
+  const createOutboxSql = `
+    CREATE TABLE castore_outbox (
+      id              VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+      aggregate_name  VARCHAR(255) NOT NULL,
+      aggregate_id    VARCHAR(64) NOT NULL,
+      version         INT NOT NULL,
+      created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+      claim_token     VARCHAR(36),
+      claimed_at      DATETIME(3),
+      processed_at    DATETIME(3),
+      attempts        INT NOT NULL DEFAULT 0,
+      last_error      VARCHAR(2048),
+      last_attempt_at DATETIME(3),
+      dead_at         DATETIME(3),
+      CONSTRAINT outbox_aggregate_version_uq UNIQUE (aggregate_name, aggregate_id, version)
+    )
+  `;
+
+  beforeEach(async () => {
+    await resetEventTable();
+    await connection.query(`DROP TABLE IF EXISTS castore_outbox`);
+    await connection.query(createOutboxSql);
+  });
+
+  afterAll(async () => {
+    await connection.query(`DROP TABLE IF EXISTS castore_outbox`);
+  });
+
+  it('does not roll back the transaction when force-replaying an already-outboxed event', async () => {
+    const aggregateId = randomUUID();
+    const initialEvent = {
+      aggregateId,
+      version: 1,
+      type: 'EVENT_TYPE',
+      timestamp: '2021-01-01T00:00:00.000Z',
+      payload: { v: 1 },
+    };
+    const replayedEvent = {
+      aggregateId,
+      version: 1,
+      type: 'EVENT_TYPE',
+      timestamp: '2021-01-01T00:00:00.000Z',
+      payload: { v: 2 },
+    };
+
+    const adapter = new DrizzleMysqlEventStorageAdapter({
+      db,
+      eventTable,
+      outbox: outboxTable,
+    });
+
+    // First push: event row + outbox row are created atomically.
+    await adapter.pushEvent(initialEvent, { eventStoreId });
+
+    // Force-replay: MUST NOT throw on the outbox unique constraint.
+    await expect(
+      adapter.pushEvent(replayedEvent, { eventStoreId, force: true }),
+    ).resolves.toBeDefined();
+
+    // Event row reflects the replayed payload.
+    const { events } = await adapter.getEvents(aggregateId, { eventStoreId });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload).toStrictEqual({ v: 2 });
+
+    // Outbox still has exactly one pointer row for this (name, id, version):
+    // the existing pointer is sufficient since the relay reads the event row
+    // at publish time — a second pointer would cause a double-publish.
+    const [outboxRows] = (await connection.query(
+      `SELECT aggregate_name, aggregate_id, version FROM castore_outbox WHERE aggregate_id = '${aggregateId}'`,
+    )) as [unknown[], unknown];
+    expect(outboxRows).toHaveLength(1);
   });
 });

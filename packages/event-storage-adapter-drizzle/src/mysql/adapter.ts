@@ -1,7 +1,11 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { MySqlDatabase } from 'drizzle-orm/mysql-core';
 
-import { GroupedEvent } from '@castore/core';
+import {
+  GroupedEvent,
+  OUTBOX_ENABLED_SYMBOL,
+  OUTBOX_GET_EVENT_SYMBOL,
+} from '@castore/core';
 import type {
   EventDetail,
   EventsQueryOptions,
@@ -10,6 +14,7 @@ import type {
   ListAggregateIdsOptions,
   ListAggregateIdsOutput,
   OptionalTimestamp,
+  OutboxGetEventByKey,
   PushEventOptions,
 } from '@castore/core';
 
@@ -29,7 +34,11 @@ import {
 import { parsePageToken } from '../common/pageToken';
 import { makeParseGroupedEvents } from '../common/parseGroupedEvents';
 import { walkErrorCauses } from '../common/walkErrorCauses';
-import type { MysqlEventTableContract } from './contract';
+import type {
+  MysqlEventTableContract,
+  MysqlOutboxTableContract,
+} from './contract';
+import { makeMysqlGetEventByKey } from './outbox/getEventByKey';
 
 type AnyMySqlDatabaseOrTx = MySqlDatabase<any, any, any, any>;
 
@@ -50,16 +59,62 @@ const coerceMysqlTimestamp = (iso: string): Date => new Date(iso);
 export class DrizzleMysqlEventStorageAdapter implements EventStorageAdapter {
   private db: AnyMySqlDatabaseOrTx;
   private eventTable: MysqlEventTableContract;
+  private outboxTable?: MysqlOutboxTableContract;
+
+  public readonly [OUTBOX_ENABLED_SYMBOL]?: true;
+  public readonly [OUTBOX_GET_EVENT_SYMBOL]?: OutboxGetEventByKey;
 
   constructor({
     db,
     eventTable,
+    outbox,
   }: {
     db: MySqlDatabase<any, any, any, any>;
     eventTable: MysqlEventTableContract;
+    outbox?: MysqlOutboxTableContract;
   }) {
     this.db = db;
     this.eventTable = eventTable;
+    this.outboxTable = outbox;
+
+    if (outbox !== undefined) {
+      (this as { [OUTBOX_ENABLED_SYMBOL]?: true })[OUTBOX_ENABLED_SYMBOL] =
+        true;
+      (this as { [OUTBOX_GET_EVENT_SYMBOL]?: OutboxGetEventByKey })[
+        OUTBOX_GET_EVENT_SYMBOL
+      ] = makeMysqlGetEventByKey(db, eventTable);
+    }
+  }
+
+  private async insertOutboxRow(
+    tx: AnyMySqlDatabaseOrTx,
+    aggregateName: string,
+    aggregateId: string,
+    version: number,
+  ): Promise<void> {
+    if (this.outboxTable === undefined) {
+      return;
+    }
+    // Idempotent insert on the `(aggregate_name, aggregate_id, version)`
+    // unique index: the outbox row is a pointer to the event row, and by
+    // construction there can only ever be one pointer per event. A plain
+    // insert would violate the unique constraint when `force: true` replays
+    // an already-outboxed event (the event upsert succeeds via ON DUPLICATE
+    // KEY UPDATE, then this insert would blow up the whole transaction).
+    // MySQL has no native `ON CONFLICT DO NOTHING`; Drizzle's documented
+    // no-op form is `onDuplicateKeyUpdate({ set: { <col>: sql\`<col>\` } })`,
+    // which updates a column to itself — the same trick INSERT IGNORE would
+    // use, but without silencing unrelated warnings.
+    await tx
+      .insert(this.outboxTable)
+      .values({
+        aggregateName,
+        aggregateId,
+        version,
+      })
+      .onDuplicateKeyUpdate({
+        set: { id: sql`${this.outboxTable.id}` },
+      });
   }
 
   private buildInsertValues(
@@ -172,13 +227,27 @@ export class DrizzleMysqlEventStorageAdapter implements EventStorageAdapter {
       throw new Error('Failed to retrieve inserted event');
     }
 
-    return { event: buildEventDetail(insertedEvent) };
+    const detail = buildEventDetail(insertedEvent);
+    await this.insertOutboxRow(
+      tx,
+      options.eventStoreId,
+      detail.aggregateId,
+      detail.version,
+    );
+
+    return { event: detail };
   }
 
   async pushEvent(
     eventDetail: OptionalTimestamp<EventDetail>,
     options: PushEventOptions,
   ): Promise<{ event: EventDetail }> {
+    if (this.outboxTable !== undefined) {
+      return this.db.transaction(tx =>
+        this.pushEventInTx(tx, eventDetail, options),
+      );
+    }
+
     return this.pushEventInTx(this.db, eventDetail, options);
   }
 

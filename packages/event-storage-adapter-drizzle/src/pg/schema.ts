@@ -1,4 +1,5 @@
 import type { SQL } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import type { ExtraConfigColumn, IndexBuilder } from 'drizzle-orm/pg-core';
 import {
   integer,
@@ -7,6 +8,7 @@ import {
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from 'drizzle-orm/pg-core';
 
 /**
@@ -69,3 +71,72 @@ export const eventTableConstraints = <
  * Default table name is `event`.
  */
 export const eventTable = pgTable('event', eventColumns, eventTableConstraints);
+
+/**
+ * Drizzle column definitions for the outbox table (pg dialect).
+ *
+ * Pointer-shaped (no payload column): the relay reads the source event row at
+ * publish time via the adapter's symbol-keyed single-row lookup. See origin
+ * R9 for the full column-by-column rationale.
+ *
+ * All mutation timestamps are DB-authoritative — set via `NOW()` in the
+ * adapter's write SQL rather than from worker wall-clock. `created_at` has a
+ * `defaultNow()` so plain Drizzle inserts automatically pick up server time.
+ *
+ * `last_error` is capped at 2048 chars by scrubber-side truncation (see
+ * `common/outbox/scrubber.ts`); no DB-level CHECK constraint to keep the
+ * ergonomics consistent across the three dialects.
+ */
+export const outboxColumns = {
+  id: uuid('id')
+    .primaryKey()
+    .default(sql`gen_random_uuid()`),
+  aggregateName: text('aggregate_name').notNull(),
+  aggregateId: text('aggregate_id').notNull(),
+  version: integer('version').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true, precision: 3 })
+    .notNull()
+    .defaultNow(),
+  claimToken: text('claim_token'),
+  claimedAt: timestamp('claimed_at', { withTimezone: true, precision: 3 }),
+  processedAt: timestamp('processed_at', { withTimezone: true, precision: 3 }),
+  attempts: integer('attempts').notNull().default(0),
+  lastError: text('last_error'),
+  lastAttemptAt: timestamp('last_attempt_at', {
+    withTimezone: true,
+    precision: 3,
+  }),
+  deadAt: timestamp('dead_at', { withTimezone: true, precision: 3 }),
+};
+
+/**
+ * Third-arg constraints for the outbox table. The unique index on
+ * `(aggregate_name, aggregate_id, version)` is load-bearing for both the
+ * write-side idempotency (same pair can't be inserted twice) and the
+ * claim-eligibility FIFO-exclusion query.
+ */
+export const outboxTableConstraints = <
+  TTable extends {
+    aggregateName: PgIndexable;
+    aggregateId: PgIndexable;
+    version: PgIndexable;
+  },
+>(
+  table: TTable,
+): [IndexBuilder] => [
+  uniqueIndex('outbox_aggregate_version_uq').on(
+    table.aggregateName,
+    table.aggregateId,
+    table.version,
+  ),
+];
+
+/**
+ * Prebuilt outbox table for users who do not need any extra columns.
+ * Default table name is `castore_outbox`.
+ */
+export const outboxTable = pgTable(
+  'castore_outbox',
+  outboxColumns,
+  outboxTableConstraints,
+);

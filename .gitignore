@@ -58,3 +58,7 @@ build
 
 # agentic
 .grepai
+
+# Session-local output from ce-* skills (code review per-reviewer JSON,
+# run artifacts, transient analysis state). Not source, not reviewed.
+.context/

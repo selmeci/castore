@@ -10,7 +10,12 @@ import { GroupedEvent } from '@castore/core';
 import { makeAdapterConformanceSuite } from '../__tests__/conformance';
 import { DrizzleEventAlreadyExistsError } from '../common/error';
 import { DrizzleSqliteEventStorageAdapter } from './adapter';
-import { eventColumns, eventTable, eventTableConstraints } from './schema';
+import {
+  eventColumns,
+  eventTable,
+  eventTableConstraints,
+  outboxTable,
+} from './schema';
 
 // The shared better-sqlite3 in-process DB + drizzle handle live at the file
 // level so the conformance suite AND the dialect-local describe blocks
@@ -369,5 +374,119 @@ describe('drizzle sqlite storage adapter - concurrent pushEventGroup', () => {
       eventStoreId,
     });
     expect(eventsB).toHaveLength(1);
+  });
+});
+
+describe('drizzle sqlite storage adapter - outbox force-replay idempotency', () => {
+  // Regression test: when `force: true` replays an already-outboxed event,
+  // the outbox-row insert must NOT violate the unique constraint on
+  // (aggregate_name, aggregate_id, version). Before the fix, the event
+  // upsert succeeded via ON CONFLICT DO UPDATE but the plain outbox insert
+  // threw SQLITE_CONSTRAINT_UNIQUE and rolled back the whole transaction.
+  //
+  // Sqlite had the same bug as pg/mysql because `insertOutboxRow` was
+  // structurally identical across all three dialect adapters; the fix
+  // was applied here at the same time even though no CodeRabbit thread
+  // flagged the sqlite file directly.
+
+  const outboxEventStoreId = 'eventStoreId';
+  const outboxEventTableDDL = `
+    CREATE TABLE event (
+      aggregate_name  TEXT NOT NULL,
+      aggregate_id    TEXT NOT NULL,
+      version         INTEGER NOT NULL,
+      type            TEXT NOT NULL,
+      payload         TEXT,
+      metadata        TEXT,
+      timestamp       TEXT NOT NULL,
+      CONSTRAINT event_aggregate_version_uq UNIQUE (aggregate_name, aggregate_id, version)
+    )
+  `;
+  const outboxDDL = `
+    CREATE TABLE castore_outbox (
+      id              TEXT PRIMARY KEY,
+      aggregate_name  TEXT NOT NULL,
+      aggregate_id    TEXT NOT NULL,
+      version         INTEGER NOT NULL,
+      created_at      TEXT NOT NULL,
+      claim_token     TEXT,
+      claimed_at      TEXT,
+      processed_at    TEXT,
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      last_error      TEXT,
+      last_attempt_at TEXT,
+      dead_at         TEXT,
+      CONSTRAINT outbox_aggregate_version_uq UNIQUE (aggregate_name, aggregate_id, version)
+    )
+  `;
+
+  let outboxBsDb: Database.Database;
+  let outboxDb: ReturnType<typeof drizzleBetterSqlite>;
+  let outboxAdapter: DrizzleSqliteEventStorageAdapter;
+
+  beforeEach(() => {
+    // Dedicated in-memory DB so the outbox column does not clash with the
+    // conformance-suite `event` table (which has no outbox configured).
+    outboxBsDb = new Database(':memory:');
+    outboxDb = drizzleBetterSqlite(outboxBsDb);
+    outboxBsDb.exec(outboxEventTableDDL);
+    outboxBsDb.exec(outboxDDL);
+    outboxAdapter = new DrizzleSqliteEventStorageAdapter({
+      db: outboxDb,
+      eventTable,
+      outbox: outboxTable,
+    });
+  });
+
+  afterEach(() => {
+    outboxBsDb.close();
+  });
+
+  it('force-replay on an already-outboxed event does not roll back the transaction', async () => {
+    const aggregateId = randomUUID();
+    const initialEvent = {
+      aggregateId,
+      version: 1,
+      type: 'EVENT_TYPE',
+      timestamp: '2021-01-01T00:00:00.000Z',
+      payload: { v: 1 },
+    };
+    const replayedEvent = {
+      aggregateId,
+      version: 1,
+      type: 'EVENT_TYPE',
+      timestamp: '2021-01-01T00:00:00.000Z',
+      payload: { v: 2 },
+    };
+
+    // First push: event row + outbox row are created atomically.
+    await outboxAdapter.pushEvent(initialEvent, {
+      eventStoreId: outboxEventStoreId,
+    });
+
+    // Force-replay: MUST NOT throw on the outbox unique constraint.
+    await expect(
+      outboxAdapter.pushEvent(replayedEvent, {
+        eventStoreId: outboxEventStoreId,
+        force: true,
+      }),
+    ).resolves.toBeDefined();
+
+    // Event row reflects the replayed payload.
+    const { events } = await outboxAdapter.getEvents(aggregateId, {
+      eventStoreId: outboxEventStoreId,
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload).toStrictEqual({ v: 2 });
+
+    // Outbox still has exactly one pointer row for this (name, id, version):
+    // the existing pointer is sufficient since the relay reads the event row
+    // at publish time — a second pointer would cause a double-publish.
+    const outboxRows = outboxBsDb
+      .prepare(
+        `SELECT aggregate_name, aggregate_id, version FROM castore_outbox WHERE aggregate_id = ?`,
+      )
+      .all(aggregateId);
+    expect(outboxRows).toHaveLength(1);
   });
 });

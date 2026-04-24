@@ -8,6 +8,12 @@ import preferArrow from 'eslint-plugin-prefer-arrow';
 import prettier from 'eslint-plugin-prettier';
 import globals from 'globals';
 
+// The `no-restricted-imports` regex is duplicated across the JS and TS rule
+// blocks below. Hoist it to a single constant so the two blocks cannot drift
+// (e.g., adding a new public sub-path export to only one of them).
+const CASTORE_INTERNAL_IMPORT_REGEX =
+  '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite|relay)$)[^/]+/.+';
+
 export default [
   {
     ignores: [
@@ -84,15 +90,14 @@ export default [
         {
           patterns: [
             {
-              // Match `@castore/<pkg>/<anything>` but NOT the three declared
-              // per-dialect sub-path exports of
-              // @castore/event-storage-adapter-drizzle, which are part of
-              // that package's public surface (see its `exports` map).
-              // Every other internal @castore/*/<module> path stays forbidden.
-              // Using `regex` because flat-config `no-restricted-imports`
-              // doesn't support an `allow` list on group patterns.
-              regex:
-                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite)$)[^/]+/.+',
+              // Match `@castore/<pkg>/<anything>` but NOT the four declared
+              // public sub-path exports of @castore/event-storage-adapter-drizzle
+              // (pg, mysql, sqlite, relay), which are part of that package's
+              // public surface (see its `exports` map). Every other internal
+              // @castore/*/<module> path stays forbidden. Using `regex`
+              // because flat-config `no-restricted-imports` doesn't support
+              // an `allow` list on group patterns.
+              regex: CASTORE_INTERNAL_IMPORT_REGEX,
               message:
                 'import of internal modules must be done at the root level.',
             },
@@ -202,11 +207,11 @@ export default [
           patterns: [
             {
               // See the same rule in the JS block above — this regex matches
-              // `@castore/*/*` but excludes the three declared sub-path
-              // exports of @castore/event-storage-adapter-drizzle, which are
-              // part of that package's public surface.
-              regex:
-                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite)$)[^/]+/.+',
+              // `@castore/*/*` but excludes the four declared public
+              // sub-path exports of @castore/event-storage-adapter-drizzle
+              // (pg, mysql, sqlite, relay), which are part of that package's
+              // public surface.
+              regex: CASTORE_INTERNAL_IMPORT_REGEX,
               message:
                 'import of internal modules must be done at the root level.',
             },

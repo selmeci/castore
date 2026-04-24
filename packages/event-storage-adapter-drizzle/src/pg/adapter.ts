@@ -1,7 +1,11 @@
 import { and, sql } from 'drizzle-orm';
 import type { PgDatabase } from 'drizzle-orm/pg-core';
 
-import { GroupedEvent } from '@castore/core';
+import {
+  GroupedEvent,
+  OUTBOX_ENABLED_SYMBOL,
+  OUTBOX_GET_EVENT_SYMBOL,
+} from '@castore/core';
 import type {
   EventDetail,
   EventsQueryOptions,
@@ -10,6 +14,7 @@ import type {
   ListAggregateIdsOptions,
   ListAggregateIdsOutput,
   OptionalTimestamp,
+  OutboxGetEventByKey,
   PushEventOptions,
 } from '@castore/core';
 
@@ -29,7 +34,8 @@ import {
 import { parsePageToken } from '../common/pageToken';
 import { makeParseGroupedEvents } from '../common/parseGroupedEvents';
 import { walkErrorCauses } from '../common/walkErrorCauses';
-import type { PgEventTableContract } from './contract';
+import type { PgEventTableContract, PgOutboxTableContract } from './contract';
+import { makePgGetEventByKey } from './outbox/getEventByKey';
 
 type AnyPgDatabaseOrTx = PgDatabase<any, any, any>;
 
@@ -45,16 +51,68 @@ const coercePgTimestamp = (iso: string): Date => new Date(iso);
 export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
   private db: AnyPgDatabaseOrTx;
   private eventTable: PgEventTableContract;
+  private outboxTable?: PgOutboxTableContract;
+
+  // Capability markers for the outbox relay. Set on the instance (not the
+  // prototype) so `publishPushedEvent`'s symbol probe sees them only when the
+  // user opts in by passing an outbox table to the constructor.
+  public readonly [OUTBOX_ENABLED_SYMBOL]?: true;
+  public readonly [OUTBOX_GET_EVENT_SYMBOL]?: OutboxGetEventByKey;
 
   constructor({
     db,
     eventTable,
+    outbox,
   }: {
     db: PgDatabase<any, any, any>;
     eventTable: PgEventTableContract;
+    outbox?: PgOutboxTableContract;
   }) {
     this.db = db;
     this.eventTable = eventTable;
+    this.outboxTable = outbox;
+
+    if (outbox !== undefined) {
+      (this as { [OUTBOX_ENABLED_SYMBOL]?: true })[OUTBOX_ENABLED_SYMBOL] =
+        true;
+      (this as { [OUTBOX_GET_EVENT_SYMBOL]?: OutboxGetEventByKey })[
+        OUTBOX_GET_EVENT_SYMBOL
+      ] = makePgGetEventByKey(db, eventTable);
+    }
+  }
+
+  private async insertOutboxRow(
+    tx: AnyPgDatabaseOrTx,
+    aggregateName: string,
+    aggregateId: string,
+    version: number,
+  ): Promise<void> {
+    if (this.outboxTable === undefined) {
+      return;
+    }
+    // Idempotent insert on the `(aggregate_name, aggregate_id, version)`
+    // unique index: the outbox row is a pointer to the event row, and by
+    // construction there can only ever be one pointer per event. A plain
+    // insert would violate the unique constraint when `force: true` replays
+    // an already-outboxed event (the event upsert succeeds via ON CONFLICT
+    // DO UPDATE, then this insert would blow up the whole transaction).
+    // Since the relay reads the event payload at publish time, the existing
+    // pointer is sufficient — re-emitting a new row would double-publish
+    // the force-replayed event to the bus with no correctness benefit.
+    await tx
+      .insert(this.outboxTable)
+      .values({
+        aggregateName,
+        aggregateId,
+        version,
+      })
+      .onConflictDoNothing({
+        target: [
+          this.outboxTable.aggregateName,
+          this.outboxTable.aggregateId,
+          this.outboxTable.version,
+        ],
+      });
   }
 
   private buildInsertValues(
@@ -150,13 +208,31 @@ export class DrizzlePgEventStorageAdapter implements EventStorageAdapter {
       throw new Error('Failed to insert event');
     }
 
-    return { event: buildEventDetail(insertedEvent) };
+    const detail = buildEventDetail(insertedEvent);
+    await this.insertOutboxRow(
+      tx,
+      options.eventStoreId,
+      detail.aggregateId,
+      detail.version,
+    );
+
+    return { event: detail };
   }
 
   async pushEvent(
     eventDetail: OptionalTimestamp<EventDetail>,
     options: PushEventOptions,
   ): Promise<{ event: EventDetail }> {
+    // In outbox mode the event-row insert and the outbox-row insert must land
+    // in one transaction so a crash between them cannot leak or lose either
+    // row. In non-outbox mode the adapter keeps its historic shape (no
+    // transaction overhead for single-event writes).
+    if (this.outboxTable !== undefined) {
+      return this.db.transaction(tx =>
+        this.pushEventInTx(tx, eventDetail, options),
+      );
+    }
+
     return this.pushEventInTx(this.db, eventDetail, options);
   }
 
