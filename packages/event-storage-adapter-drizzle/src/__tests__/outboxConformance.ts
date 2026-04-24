@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { vi } from 'vitest';
 
 import {
@@ -26,9 +26,11 @@ import {
   createOutboxRelay,
   DuplicateEventStoreIdError,
   InvalidPublishTimeoutError,
+  OutboxPublishTimeoutError,
   OutboxRowNotFoundError,
   RegistryEntryMismatchError,
   RetryRowClaimedError,
+  UnsupportedChannelTypeError,
 } from '../relay';
 import type { BoundClaim, OutboxDialect } from '../relay';
 
@@ -781,6 +783,175 @@ export const makeOutboxConformanceSuite = <
         await expect(relay.deleteRow(ghostId)).rejects.toBeInstanceOf(
           OutboxRowNotFoundError,
         );
+      });
+    });
+
+    describe('publishTimeoutMs (R14, R15)', () => {
+      it('slow publishMessage rejects with OutboxPublishTimeoutError; row routes through retry', async () => {
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const { registry } = buildRegistry();
+        // Slow publish that ignores the AbortSignal. withTimeout's timer is
+        // the load-bearing primitive — this proves that a hung bus cannot
+        // pin a worker beyond publishTimeoutMs even when the bus ignores
+        // AbortController.abort().
+        vi.spyOn(ctx.channel, 'publishMessage').mockImplementation(async () => {
+          await new Promise(resolve => setTimeout(resolve, 600));
+        });
+        const onFail = vi.fn();
+
+        const relay = makeRelay(registry, {
+          hooks: { onFail },
+          options: {
+            claimTimeoutMs: 60_000,
+            publishTimeoutMs: 50,
+            maxAttempts: 5,
+            baseMs: 1,
+            ceilingMs: 10,
+          },
+        });
+
+        const result = await relay.runOnce();
+        expect(result.failed).toBe(1);
+        expect(onFail).toHaveBeenCalledOnce();
+        const failCall = onFail.mock.calls[0] as [
+          { error: unknown; attempts: number },
+        ];
+        expect(failCall[0].error).toBeInstanceOf(OutboxPublishTimeoutError);
+        expect(failCall[0].attempts).toBe(1);
+
+        // Retry released the claim so the row is eligible again — no stuck
+        // row. attempts incremented, claim_token cleared.
+        const row = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(row?.attempts).toBe(1);
+        expect(row?.claim_token).toBeNull();
+        expect(row?.processed_at).toBeNull();
+        expect(row?.dead_at).toBeNull();
+      });
+    });
+
+    describe('unsupported channel (R11)', () => {
+      it('rejects a channel that is neither Notification nor StateCarrying', () => {
+        // A bare object is neither a NotificationMessageChannel nor a
+        // StateCarryingMessageChannel instance; factory must fail fast
+        // rather than dead-transitioning every row at publish time.
+        const invalidChannel = {} as unknown as RelayChannel;
+        expect(() =>
+          makeRelay([
+            {
+              eventStoreId: ctx.connectedEventStore.eventStoreId,
+              connectedEventStore: ctx.connectedEventStore,
+              channel: invalidChannel,
+            },
+          ]),
+        ).toThrow(UnsupportedChannelTypeError);
+      });
+    });
+
+    describe('retried-then-re-dead (R16)', () => {
+      it('onDead fires again when a retried dead row fails again', async () => {
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const { registry } = buildRegistry();
+        vi.spyOn(ctx.channel, 'publishMessage').mockRejectedValue(
+          new Error('bus still down'),
+        );
+        const onDead = vi.fn();
+        const relay = makeRelay(registry, {
+          hooks: { onDead },
+          options: { maxAttempts: 1, baseMs: 1, ceilingMs: 10 },
+        });
+
+        // First dead transition: maxAttempts=1 so one failure is enough.
+        await relay.runOnce();
+        const firstDead = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(firstDead?.dead_at).not.toBeNull();
+        expect(onDead).toHaveBeenCalledTimes(1);
+
+        // Retry the dead row; relay claims it; fails again → re-dead.
+        // The retried row starts with attempts = maxAttempts after the
+        // first dead. The retry path resets attempts to 0, so the second
+        // dead transition still takes maxAttempts failures (here: 1).
+        await relay.retryRow(firstDead!.id);
+        await relay.runOnce();
+
+        const secondDead = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(secondDead?.dead_at).not.toBeNull();
+        expect(onDead).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    describe('liveness queries (R22)', () => {
+      it('depth / dead-count / age projections return expected shapes', async () => {
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 2);
+
+        // Mark v1 dead out-of-band so dead-count > 0.
+        const v1 = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        await ctx.db
+          .update(ctx.outboxTable)
+          .set({ deadAt: dialectNow(dialectName) })
+          .where(eq(ctx.outboxTable.id as never, v1!.id));
+
+        const depth = (await ctx.db
+          .select({ n: sql<number>`COUNT(*)` })
+          .from(ctx.outboxTable)) as Array<{ n: unknown }>;
+        expect(Number(depth[0]!.n)).toBe(2);
+
+        const deadCount = (await ctx.db
+          .select({ n: sql<number>`COUNT(*)` })
+          .from(ctx.outboxTable)
+          .where(sql`dead_at IS NOT NULL`)) as Array<{ n: unknown }>;
+        expect(Number(deadCount[0]!.n)).toBe(1);
+
+        const ageRows = (await ctx.db
+          .select({ minCreatedAt: sql<string>`MIN(created_at)` })
+          .from(ctx.outboxTable)) as Array<{ minCreatedAt: unknown }>;
+        expect(ageRows[0]!.minCreatedAt).not.toBeNull();
+      });
+    });
+
+    describe('supervisor programming-error abort (R18)', () => {
+      it('runContinuously rejects rather than loops when claim throws TypeError', async () => {
+        const { registry } = buildRegistry();
+        const brokenClaim: BoundClaim = () => {
+          throw new TypeError('programming error in claim');
+        };
+
+        const relay = createOutboxRelay({
+          dialect: dialectName,
+          adapter: ctx.adapter,
+          db: ctx.db,
+          outboxTable: ctx.outboxTable,
+          claim: brokenClaim,
+          registry,
+          options: { baseMs: 1, ceilingMs: 10, pollingMs: 1 },
+        });
+
+        await expect(relay.runContinuously()).rejects.toBeInstanceOf(TypeError);
       });
     });
 
