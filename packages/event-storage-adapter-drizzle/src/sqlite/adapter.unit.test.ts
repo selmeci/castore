@@ -13,8 +13,10 @@ import {
   makeCounterEventStore,
   makeOutboxConformanceSuite,
 } from '../__tests__/outboxConformance';
+import { makeOutboxFaultInjectionSuite } from '../__tests__/outboxFaultInjection';
 import { DrizzleEventAlreadyExistsError } from '../common/error';
 import { claimSqlite } from '../relay';
+import type { BoundClaim } from '../relay';
 import { DrizzleSqliteEventStorageAdapter } from './adapter';
 import {
   eventColumns,
@@ -131,80 +133,92 @@ afterAll(() => {
   ocBsDb.close();
 });
 
+const sqliteOutboxSetup = async () => {
+  const eventStore = makeCounterEventStore('counters');
+  const bus = makeCounterBus('counters');
+  const outboxAdapter = new DrizzleSqliteEventStorageAdapter({
+    db: outboxDb,
+    eventTable,
+    outbox: outboxTable,
+  });
+  const connectedEventStore = new ConnectedEventStore(eventStore, bus);
+  connectedEventStore.eventStorageAdapter = outboxAdapter;
+
+  return {
+    adapter: outboxAdapter,
+    db: outboxDb,
+    outboxTable,
+    connectedEventStore,
+    channel: bus,
+    claim: (args =>
+      claimSqlite({ db: outboxDb, outboxTable, ...args })) as BoundClaim,
+    reset: async () => {
+      runDDL(ocBsDb, `DROP TABLE IF EXISTS event`);
+      runDDL(ocBsDb, sqliteOutboxEventTableDDL);
+      runDDL(ocBsDb, `DROP TABLE IF EXISTS castore_outbox`);
+      runDDL(ocBsDb, sqliteOutboxDDL);
+    },
+    backdateClaimedAt: async (rowId: string, msAgo: number) => {
+      const seconds = Math.floor(msAgo / 1000);
+      ocBsDb
+        .prepare(
+          `UPDATE castore_outbox SET claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-' || ? || ' seconds') WHERE id = ?`,
+        )
+        .run(seconds, rowId);
+    },
+    uniqueConstraintExists: async () => {
+      // SQLite does not preserve named CONSTRAINT identifiers through
+      // PRAGMA index_list; a declared `CONSTRAINT outbox_aggregate_version_uq
+      // UNIQUE (...)` surfaces as an auto-named index (`sqlite_autoindex_*`)
+      // with `unique=1`. Walk `index_list` + `index_info` and confirm that
+      // at least one unique index covers exactly the (aggregate_name,
+      // aggregate_id, version) column set.
+      const indexes = ocBsDb
+        .prepare(`PRAGMA index_list(castore_outbox)`)
+        .all() as { name: string; unique: number }[];
+      const expected = new Set(['aggregate_name', 'aggregate_id', 'version']);
+      for (const ix of indexes) {
+        if (ix.unique !== 1) {
+          continue;
+        }
+        const cols = ocBsDb
+          .prepare(`PRAGMA index_info(${JSON.stringify(ix.name)})`)
+          .all() as { name: string }[];
+        const colSet = new Set(cols.map(c => c.name));
+        if (
+          colSet.size === expected.size &&
+          [...expected].every(c => colSet.has(c))
+        ) {
+          return true;
+        }
+      }
+
+      return false;
+    },
+    deleteEventRow: async (aggregateId: string) => {
+      ocBsDb
+        .prepare(`DELETE FROM event WHERE aggregate_id = ?`)
+        .run(aggregateId);
+    },
+  };
+};
+
+const sqliteOutboxTeardown = async (): Promise<void> => {
+  /* DB lifecycle is owned by the file, not the factory */
+};
+
 makeOutboxConformanceSuite({
   dialectName: 'sqlite',
   adapterClass: DrizzleSqliteEventStorageAdapter,
-  setup: async () => {
-    const eventStore = makeCounterEventStore('counters');
-    const bus = makeCounterBus('counters');
-    const outboxAdapter = new DrizzleSqliteEventStorageAdapter({
-      db: outboxDb,
-      eventTable,
-      outbox: outboxTable,
-    });
-    const connectedEventStore = new ConnectedEventStore(eventStore, bus);
-    connectedEventStore.eventStorageAdapter = outboxAdapter;
+  setup: sqliteOutboxSetup,
+  teardown: sqliteOutboxTeardown,
+});
 
-    return {
-      adapter: outboxAdapter,
-      db: outboxDb,
-      outboxTable,
-      connectedEventStore,
-      channel: bus,
-      claim: args => claimSqlite({ db: outboxDb, outboxTable, ...args }),
-      reset: async () => {
-        runDDL(ocBsDb, `DROP TABLE IF EXISTS event`);
-        runDDL(ocBsDb, sqliteOutboxEventTableDDL);
-        runDDL(ocBsDb, `DROP TABLE IF EXISTS castore_outbox`);
-        runDDL(ocBsDb, sqliteOutboxDDL);
-      },
-      backdateClaimedAt: async (rowId, msAgo) => {
-        const seconds = Math.floor(msAgo / 1000);
-        ocBsDb
-          .prepare(
-            `UPDATE castore_outbox SET claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-' || ? || ' seconds') WHERE id = ?`,
-          )
-          .run(seconds, rowId);
-      },
-      uniqueConstraintExists: async () => {
-        // SQLite does not preserve named CONSTRAINT identifiers through
-        // PRAGMA index_list; a declared `CONSTRAINT outbox_aggregate_version_uq
-        // UNIQUE (...)` surfaces as an auto-named index (`sqlite_autoindex_*`)
-        // with `unique=1`. Walk `index_list` + `index_info` and confirm that
-        // at least one unique index covers exactly the (aggregate_name,
-        // aggregate_id, version) column set.
-        const indexes = ocBsDb
-          .prepare(`PRAGMA index_list(castore_outbox)`)
-          .all() as { name: string; unique: number }[];
-        const expected = new Set(['aggregate_name', 'aggregate_id', 'version']);
-        for (const ix of indexes) {
-          if (ix.unique !== 1) {
-            continue;
-          }
-          const cols = ocBsDb
-            .prepare(`PRAGMA index_info(${JSON.stringify(ix.name)})`)
-            .all() as { name: string }[];
-          const colSet = new Set(cols.map(c => c.name));
-          if (
-            colSet.size === expected.size &&
-            [...expected].every(c => colSet.has(c))
-          ) {
-            return true;
-          }
-        }
-
-        return false;
-      },
-      deleteEventRow: async (aggregateId: string) => {
-        ocBsDb
-          .prepare(`DELETE FROM event WHERE aggregate_id = ?`)
-          .run(aggregateId);
-      },
-    };
-  },
-  teardown: async () => {
-    /* DB lifecycle is owned by the file, not the factory */
-  },
+makeOutboxFaultInjectionSuite({
+  dialectName: 'sqlite',
+  adapterClass: DrizzleSqliteEventStorageAdapter,
+  setup: sqliteOutboxSetup,
+  teardown: sqliteOutboxTeardown,
 });
 
 // Dialect-local scenarios: JSON round-trip, extended table, libsql driver.

@@ -13,7 +13,9 @@ import {
   makeCounterEventStore,
   makeOutboxConformanceSuite,
 } from '../__tests__/outboxConformance';
+import { makeOutboxFaultInjectionSuite } from '../__tests__/outboxFaultInjection';
 import { claimMysql } from '../relay';
+import type { BoundClaim } from '../relay';
 import { DrizzleMysqlEventStorageAdapter } from './adapter';
 import {
   eventColumns,
@@ -105,55 +107,66 @@ const createMysqlOutboxSql = `
   )
 `;
 
+const mysqlOutboxSetup = async () => {
+  const eventStore = makeCounterEventStore('counters');
+  const bus = makeCounterBus('counters');
+  const outboxAdapter = new DrizzleMysqlEventStorageAdapter({
+    db,
+    eventTable,
+    outbox: outboxTable,
+  });
+  const connectedEventStore = new ConnectedEventStore(eventStore, bus);
+  connectedEventStore.eventStorageAdapter = outboxAdapter;
+
+  return {
+    adapter: outboxAdapter,
+    db,
+    outboxTable,
+    connectedEventStore,
+    channel: bus,
+    claim: (args => claimMysql({ db, outboxTable, ...args })) as BoundClaim,
+    reset: async () => {
+      await resetEventTable();
+      await connection.query(`DROP TABLE IF EXISTS castore_outbox`);
+      await connection.query(createMysqlOutboxSql);
+    },
+    backdateClaimedAt: async (rowId: string, msAgo: number) => {
+      await connection.query(
+        `UPDATE castore_outbox SET claimed_at = DATE_SUB(NOW(3), INTERVAL ${Math.floor(msAgo)} / 1000 SECOND) WHERE id = ?`,
+        [rowId],
+      );
+    },
+    uniqueConstraintExists: async () => {
+      const [rows] = (await connection.query(
+        `SHOW INDEX FROM castore_outbox WHERE Key_name = 'outbox_aggregate_version_uq'`,
+      )) as [unknown[], unknown];
+
+      return rows.length > 0;
+    },
+    deleteEventRow: async (aggregateId: string) => {
+      await connection.query(`DELETE FROM event WHERE aggregate_id = ?`, [
+        aggregateId,
+      ]);
+    },
+  };
+};
+
+const mysqlOutboxTeardown = async (): Promise<void> => {
+  /* container lifecycle is owned by the file, not the factory */
+};
+
 makeOutboxConformanceSuite({
   dialectName: 'mysql',
   adapterClass: DrizzleMysqlEventStorageAdapter,
-  setup: async () => {
-    const eventStore = makeCounterEventStore('counters');
-    const bus = makeCounterBus('counters');
-    const outboxAdapter = new DrizzleMysqlEventStorageAdapter({
-      db,
-      eventTable,
-      outbox: outboxTable,
-    });
-    const connectedEventStore = new ConnectedEventStore(eventStore, bus);
-    connectedEventStore.eventStorageAdapter = outboxAdapter;
+  setup: mysqlOutboxSetup,
+  teardown: mysqlOutboxTeardown,
+});
 
-    return {
-      adapter: outboxAdapter,
-      db,
-      outboxTable,
-      connectedEventStore,
-      channel: bus,
-      claim: args => claimMysql({ db, outboxTable, ...args }),
-      reset: async () => {
-        await resetEventTable();
-        await connection.query(`DROP TABLE IF EXISTS castore_outbox`);
-        await connection.query(createMysqlOutboxSql);
-      },
-      backdateClaimedAt: async (rowId, msAgo) => {
-        await connection.query(
-          `UPDATE castore_outbox SET claimed_at = DATE_SUB(NOW(3), INTERVAL ${Math.floor(msAgo)} / 1000 SECOND) WHERE id = ?`,
-          [rowId],
-        );
-      },
-      uniqueConstraintExists: async () => {
-        const [rows] = (await connection.query(
-          `SHOW INDEX FROM castore_outbox WHERE Key_name = 'outbox_aggregate_version_uq'`,
-        )) as [unknown[], unknown];
-
-        return rows.length > 0;
-      },
-      deleteEventRow: async (aggregateId: string) => {
-        await connection.query(`DELETE FROM event WHERE aggregate_id = ?`, [
-          aggregateId,
-        ]);
-      },
-    };
-  },
-  teardown: async () => {
-    /* container lifecycle is owned by the file, not the factory */
-  },
+makeOutboxFaultInjectionSuite({
+  dialectName: 'mysql',
+  adapterClass: DrizzleMysqlEventStorageAdapter,
+  setup: mysqlOutboxSetup,
+  teardown: mysqlOutboxTeardown,
 });
 
 // Dialect-local scenarios — JSON round-trip parity and extended-table.

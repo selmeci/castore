@@ -24,8 +24,10 @@ import {
   makeCounterEventStore,
   makeOutboxConformanceSuite,
 } from '../__tests__/outboxConformance';
+import { makeOutboxFaultInjectionSuite } from '../__tests__/outboxFaultInjection';
 import { DrizzleEventAlreadyExistsError } from '../common/error';
 import { claimPg } from '../relay';
+import type { BoundClaim } from '../relay';
 import { DrizzlePgEventStorageAdapter } from './adapter';
 import {
   eventColumns,
@@ -109,58 +111,69 @@ const createPgOutboxSql = sql`
 `;
 const dropPgOutboxSql = sql`DROP TABLE IF EXISTS castore_outbox;`;
 
+const pgOutboxSetup = async () => {
+  const eventStore = makeCounterEventStore('counters');
+  const bus = makeCounterBus('counters');
+  const outboxAdapter = new DrizzlePgEventStorageAdapter({
+    db,
+    eventTable,
+    outbox: outboxTable,
+  });
+  const connectedEventStore = new ConnectedEventStore(eventStore, bus);
+  connectedEventStore.eventStorageAdapter = outboxAdapter;
+
+  return {
+    adapter: outboxAdapter,
+    db,
+    outboxTable,
+    connectedEventStore,
+    channel: bus,
+    claim: (args => claimPg({ db, outboxTable, ...args })) as BoundClaim,
+    reset: async () => {
+      await db.execute(dropTableSql);
+      await db.execute(createTableSql);
+      await db.execute(dropPgOutboxSql);
+      await db.execute(createPgOutboxSql);
+    },
+    backdateClaimedAt: async (rowId: string, msAgo: number) => {
+      await db.execute(
+        sql`UPDATE castore_outbox SET claimed_at = NOW() - ${sql.raw(`INTERVAL '${Math.floor(msAgo)} milliseconds'`)} WHERE id = ${rowId}::uuid`,
+      );
+    },
+    uniqueConstraintExists: async () => {
+      const raw: unknown = await db.execute(
+        sql`SELECT conname FROM pg_constraint WHERE conname = 'outbox_aggregate_version_uq'`,
+      );
+      const rows = Array.isArray(raw)
+        ? raw
+        : ((raw as { rows?: unknown[] }).rows ?? []);
+
+      return rows.length > 0;
+    },
+    deleteEventRow: async (aggregateId: string) => {
+      await db.execute(
+        sql`DELETE FROM event WHERE aggregate_id = ${aggregateId}`,
+      );
+    },
+  };
+};
+
+const pgOutboxTeardown = async (): Promise<void> => {
+  /* container lifecycle is owned by the file, not the factory */
+};
+
 makeOutboxConformanceSuite({
   dialectName: 'pg',
   adapterClass: DrizzlePgEventStorageAdapter,
-  setup: async () => {
-    const eventStore = makeCounterEventStore('counters');
-    const bus = makeCounterBus('counters');
-    const outboxAdapter = new DrizzlePgEventStorageAdapter({
-      db,
-      eventTable,
-      outbox: outboxTable,
-    });
-    const connectedEventStore = new ConnectedEventStore(eventStore, bus);
-    connectedEventStore.eventStorageAdapter = outboxAdapter;
+  setup: pgOutboxSetup,
+  teardown: pgOutboxTeardown,
+});
 
-    return {
-      adapter: outboxAdapter,
-      db,
-      outboxTable,
-      connectedEventStore,
-      channel: bus,
-      claim: args => claimPg({ db, outboxTable, ...args }),
-      reset: async () => {
-        await db.execute(dropTableSql);
-        await db.execute(createTableSql);
-        await db.execute(dropPgOutboxSql);
-        await db.execute(createPgOutboxSql);
-      },
-      backdateClaimedAt: async (rowId, msAgo) => {
-        await db.execute(
-          sql`UPDATE castore_outbox SET claimed_at = NOW() - ${sql.raw(`INTERVAL '${Math.floor(msAgo)} milliseconds'`)} WHERE id = ${rowId}::uuid`,
-        );
-      },
-      uniqueConstraintExists: async () => {
-        const raw: unknown = await db.execute(
-          sql`SELECT conname FROM pg_constraint WHERE conname = 'outbox_aggregate_version_uq'`,
-        );
-        const rows = Array.isArray(raw)
-          ? raw
-          : ((raw as { rows?: unknown[] }).rows ?? []);
-
-        return rows.length > 0;
-      },
-      deleteEventRow: async (aggregateId: string) => {
-        await db.execute(
-          sql`DELETE FROM event WHERE aggregate_id = ${aggregateId}`,
-        );
-      },
-    };
-  },
-  teardown: async () => {
-    /* container lifecycle is owned by the file, not the factory */
-  },
+makeOutboxFaultInjectionSuite({
+  dialectName: 'pg',
+  adapterClass: DrizzlePgEventStorageAdapter,
+  setup: pgOutboxSetup,
+  teardown: pgOutboxTeardown,
 });
 
 // Dialect-specific scenarios live below — they are NOT part of the shared
