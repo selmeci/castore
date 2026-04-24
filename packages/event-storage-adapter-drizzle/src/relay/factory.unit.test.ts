@@ -263,6 +263,65 @@ describe('createOutboxRelay', () => {
     expect(result.claimed).toBe(0);
   });
 
+  it('rejects a second runContinuously() call while the first loop is still running', async () => {
+    const bus = new NotificationMessageBus({
+      messageBusId: 'b',
+      sourceEventStores: [countersStore],
+    });
+    const relay = createOutboxRelay({
+      dialect: 'sqlite',
+      adapter: makeOutboxAdapter(),
+      db,
+      outboxTable,
+      claim,
+      registry: [
+        {
+          eventStoreId: 'counters',
+          connectedEventStore: new ConnectedEventStore(countersStore, bus),
+          channel: bus,
+        },
+      ],
+      options: { pollingMs: 25 },
+    });
+
+    const loop = relay.runContinuously();
+    expect(() => relay.runContinuously()).toThrow(/already running/);
+
+    await relay.stop();
+    await loop;
+  });
+
+  it('runContinuously() can be restarted after stop() completes', async () => {
+    const bus = new NotificationMessageBus({
+      messageBusId: 'b',
+      sourceEventStores: [countersStore],
+    });
+    const relay = createOutboxRelay({
+      dialect: 'sqlite',
+      adapter: makeOutboxAdapter(),
+      db,
+      outboxTable,
+      claim,
+      registry: [
+        {
+          eventStoreId: 'counters',
+          connectedEventStore: new ConnectedEventStore(countersStore, bus),
+          channel: bus,
+        },
+      ],
+      options: { pollingMs: 25 },
+    });
+
+    const first = relay.runContinuously();
+    await relay.stop();
+    await first;
+
+    // Restart must succeed after stop() has resolved.
+    const second = relay.runContinuously();
+    await relay.stop();
+    await second;
+  });
+
   it('exposes retryRow and deleteRow bound to the relay db + table', async () => {
     const bus = new NotificationMessageBus({
       messageBusId: 'b',

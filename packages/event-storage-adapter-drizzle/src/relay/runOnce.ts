@@ -99,13 +99,25 @@ const processOne = async (
     }
   } catch (error) {
     result.failed += 1;
-    await handleFailure({
-      row,
-      error,
-      ctx: state.ctx,
-      hooks: state.hooks,
-      options: state.options,
-    });
+    // Guard handleFailure's own DB call so a second-level failure
+    // (connection severed between publish-fail and the fencedUpdate that
+    // would increment attempts) does not terminate the whole batch and
+    // stall sibling rows for a full TTL. The row stays with its claim_token
+    // populated; TTL reclaim picks it up on the next relay cycle.
+    try {
+      await handleFailure({
+        row,
+        error,
+        ctx: state.ctx,
+        hooks: state.hooks,
+        options: state.options,
+      });
+    } catch (secondaryError) {
+      console.error(
+        `[outbox relay] handleFailure failed for row ${row.id}; row will be TTL-reclaimed:`,
+        secondaryError,
+      );
+    }
   }
 };
 

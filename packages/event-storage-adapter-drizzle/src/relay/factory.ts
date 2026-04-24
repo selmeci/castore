@@ -111,6 +111,15 @@ export const createOutboxRelay = (args: CreateOutboxRelayArgs): OutboxRelay => {
   return {
     runOnce: () => runOnce(state),
     runContinuously: () => {
+      // Reject re-entry while a loop is in flight. Silently overwriting
+      // `loopPromise` would orphan the first loop (still running, no longer
+      // awaited by `stop()`) and double the publish load until the shared
+      // `state.stopping` flag eventually terminates both.
+      if (loopPromise !== undefined && !state.stopping) {
+        throw new Error(
+          'runContinuously() is already running. Call stop() first, or use runOnce() for ad-hoc invocations.',
+        );
+      }
       state.stopping = false;
       loopPromise = runContinuously(state);
 
@@ -118,11 +127,15 @@ export const createOutboxRelay = (args: CreateOutboxRelayArgs): OutboxRelay => {
     },
     stop: async () => {
       if (loopPromise === undefined) {
+        // stop() called before runContinuously(): latch the flag so a
+        // later runContinuously() is also a no-op via the re-entry check
+        // above. Callers who want to re-run must construct a fresh relay.
         state.stopping = true;
 
         return;
       }
       await makeStop(state, loopPromise).stop();
+      loopPromise = undefined;
     },
     retryRow: (rowId, options) =>
       retryRowImpl(

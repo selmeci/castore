@@ -16,6 +16,24 @@ import { AGGREGATE_MISSING, buildEnvelope } from './envelope';
 import { dispatchOnDead } from './hooks';
 
 /**
+ * Assert that a claimed row has a non-null `claim_token`. Every row reaching
+ * `publish()` or the dead-transition path has been stamped by `claim()`; a
+ * null token here is a contract violation (invariant break), not a runtime
+ * case to paper over with `?? ''`. Throwing fails loud so a future refactor
+ * that feeds non-claimed rows in is caught immediately instead of silently
+ * no-oping every UPDATE.
+ */
+const requireClaimToken = (row: OutboxRow): string => {
+  if (row.claim_token === null) {
+    throw new Error(
+      `Outbox row ${row.id} reached the publish path without a claim_token — invariant violation.`,
+    );
+  }
+
+  return row.claim_token;
+};
+
+/**
  * Dialect-parametric context threaded through every relay operation. The
  * relay factory (U7) builds this once and reuses it for runOnce /
  * runContinuously. Typing the db + outboxTable opaquely keeps publish.ts
@@ -67,6 +85,11 @@ export const publish = async ({
   hooks,
 }: PublishArgs): Promise<PublishOutcome> => {
   const lookup = ctx.adapter[OUTBOX_GET_EVENT_SYMBOL];
+  // A `return undefined` from the lookup is the adapter's explicit signal
+  // that the source event row is gone (crypto-shredded) — permanent, route
+  // to dead. A THROW is a transient read failure (connection, deadlock);
+  // let it propagate so runOnce's retry path handles it with attempts++
+  // rather than silently marking the row dead on the first blip.
   const eventDetail = await lookup(
     row.aggregate_name,
     row.aggregate_id,
@@ -109,7 +132,7 @@ export const publish = async ({
     db: ctx.db,
     outboxTable: ctx.outboxTable,
     rowId: row.id,
-    currentClaimToken: row.claim_token ?? '',
+    currentClaimToken: requireClaimToken(row),
     set: { processedAt: dialectNow(ctx.dialect) },
   });
 
@@ -134,7 +157,7 @@ const transitionToDead = async ({
     db: ctx.db,
     outboxTable: ctx.outboxTable,
     rowId: row.id,
-    currentClaimToken: row.claim_token ?? '',
+    currentClaimToken: requireClaimToken(row),
     set: {
       deadAt: dialectNow(ctx.dialect),
       lastError: scrubLastError(lastError),

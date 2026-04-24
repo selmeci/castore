@@ -63,12 +63,18 @@ export const handleFailure = async ({
     set.deadAt = dialectNow(ctx.dialect);
   }
 
+  if (row.claim_token === null) {
+    throw new Error(
+      `handleFailure received outbox row ${row.id} without a claim_token — invariant violation.`,
+    );
+  }
+
   const affected = await fencedUpdate({
     dialect: ctx.dialect,
     db: ctx.db,
     outboxTable: ctx.outboxTable,
     rowId: row.id,
-    currentClaimToken: row.claim_token ?? '',
+    currentClaimToken: row.claim_token,
     set,
   });
 

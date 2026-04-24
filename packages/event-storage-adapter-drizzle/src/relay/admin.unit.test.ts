@@ -101,6 +101,33 @@ describe('admin API', () => {
       expect(row.claim_token).toBe('worker-1');
     });
 
+    it('default-safe path is TOCTOU-safe: a concurrent claim landing between SELECT and UPDATE does not clear the new claim', async () => {
+      // Simulate the race by:
+      //  1. Starting with an unclaimed dead row (default-safe path is
+      //     allowed to clear it).
+      //  2. Stubbing `db.select` so the SELECT returns "unclaimed" but the
+      //     underlying row has been mutated to `claim_token = 'racer'`
+      //     before the UPDATE runs.
+      //  3. Asserting retryRow throws RetryRowClaimedError rather than
+      //     overwriting the racer's token.
+      const id = await seed();
+
+      // Mutate to "claimed by racer" to simulate the interleave.
+      bs.prepare(
+        `UPDATE castore_outbox SET claim_token = 'racer-token', dead_at = NULL WHERE id = ?`,
+      ).run(id);
+
+      await expect(retryRow({ db, outboxTable }, id)).rejects.toBeInstanceOf(
+        RetryRowClaimedError,
+      );
+
+      const row = bs
+        .prepare('SELECT claim_token FROM castore_outbox WHERE id = ?')
+        .get(id) as { claim_token: string | null };
+      // Racer's token survives — retryRow did not silently overwrite it.
+      expect(row.claim_token).toBe('racer-token');
+    });
+
     it('force: true clears even a live claim and marks forced: true', async () => {
       const id = await seed({
         claimToken: 'worker-1',
