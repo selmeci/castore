@@ -95,11 +95,26 @@ export class DrizzleMysqlEventStorageAdapter implements EventStorageAdapter {
     if (this.outboxTable === undefined) {
       return;
     }
-    await tx.insert(this.outboxTable).values({
-      aggregateName,
-      aggregateId,
-      version,
-    });
+    // Idempotent insert on the `(aggregate_name, aggregate_id, version)`
+    // unique index: the outbox row is a pointer to the event row, and by
+    // construction there can only ever be one pointer per event. A plain
+    // insert would violate the unique constraint when `force: true` replays
+    // an already-outboxed event (the event upsert succeeds via ON DUPLICATE
+    // KEY UPDATE, then this insert would blow up the whole transaction).
+    // MySQL has no native `ON CONFLICT DO NOTHING`; Drizzle's documented
+    // no-op form is `onDuplicateKeyUpdate({ set: { <col>: sql\`<col>\` } })`,
+    // which updates a column to itself — the same trick INSERT IGNORE would
+    // use, but without silencing unrelated warnings.
+    await tx
+      .insert(this.outboxTable)
+      .values({
+        aggregateName,
+        aggregateId,
+        version,
+      })
+      .onDuplicateKeyUpdate({
+        set: { id: sql`${this.outboxTable.id}` },
+      });
   }
 
   private buildInsertValues(

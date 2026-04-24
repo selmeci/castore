@@ -19,7 +19,12 @@ import postgres from 'postgres';
 import { makeAdapterConformanceSuite } from '../__tests__/conformance';
 import { DrizzleEventAlreadyExistsError } from '../common/error';
 import { DrizzlePgEventStorageAdapter } from './adapter';
-import { eventColumns, eventTable, eventTableConstraints } from './schema';
+import {
+  eventColumns,
+  eventTable,
+  eventTableConstraints,
+  outboxTable,
+} from './schema';
 
 const createTableSql = sql`
   CREATE TABLE IF NOT EXISTS event (
@@ -200,5 +205,92 @@ describe('drizzle pg storage adapter — node-postgres driver coverage', () => {
     await expect(() =>
       nodePgAdapter.pushEvent(eventMock1, { eventStoreId }),
     ).rejects.toBeInstanceOf(DrizzleEventAlreadyExistsError);
+  });
+});
+
+describe('drizzle pg storage adapter — outbox force-replay idempotency', () => {
+  // Regression test: when `force: true` replays an already-outboxed event,
+  // the outbox-row insert must NOT violate the unique constraint on
+  // (aggregate_name, aggregate_id, version). Before the fix, the event
+  // upsert succeeded via ON CONFLICT DO UPDATE but the plain outbox insert
+  // threw a duplicate-key error and rolled back the whole transaction.
+
+  const createOutboxSql = sql`
+    CREATE TABLE IF NOT EXISTS castore_outbox (
+      id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      aggregate_name  TEXT NOT NULL,
+      aggregate_id    TEXT NOT NULL,
+      version         INTEGER NOT NULL,
+      created_at      TIMESTAMPTZ(3) NOT NULL DEFAULT NOW(),
+      claim_token     TEXT,
+      claimed_at      TIMESTAMPTZ(3),
+      processed_at    TIMESTAMPTZ(3),
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      last_error      TEXT,
+      last_attempt_at TIMESTAMPTZ(3),
+      dead_at         TIMESTAMPTZ(3),
+      CONSTRAINT outbox_aggregate_version_uq UNIQUE (aggregate_name, aggregate_id, version)
+    );
+  `;
+  const dropOutboxSql = sql`DROP TABLE IF EXISTS castore_outbox;`;
+
+  beforeEach(async () => {
+    await db.execute(dropTableSql);
+    await db.execute(createTableSql);
+    await db.execute(dropOutboxSql);
+    await db.execute(createOutboxSql);
+  });
+
+  afterAll(async () => {
+    await db.execute(dropOutboxSql);
+  });
+
+  it('does not roll back the transaction when force-replaying an already-outboxed event', async () => {
+    const eventStoreId = 'eventStoreId';
+    const aggregateId = randomUUID();
+    const initialEvent = {
+      aggregateId,
+      version: 1,
+      type: 'EVENT_TYPE',
+      timestamp: '2021-01-01T00:00:00.000Z',
+      payload: { v: 1 },
+    };
+    const replayedEvent = {
+      aggregateId,
+      version: 1,
+      type: 'EVENT_TYPE',
+      timestamp: '2021-01-01T00:00:00.000Z',
+      payload: { v: 2 },
+    };
+
+    const adapter = new DrizzlePgEventStorageAdapter({
+      db,
+      eventTable,
+      outbox: outboxTable,
+    });
+
+    // First push: event row + outbox row are created atomically.
+    await adapter.pushEvent(initialEvent, { eventStoreId });
+
+    // Force-replay: MUST NOT throw on the outbox unique constraint.
+    await expect(
+      adapter.pushEvent(replayedEvent, { eventStoreId, force: true }),
+    ).resolves.toBeDefined();
+
+    // Event row reflects the replayed payload.
+    const { events } = await adapter.getEvents(aggregateId, { eventStoreId });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.payload).toStrictEqual({ v: 2 });
+
+    // Outbox still has exactly one pointer row for this (name, id, version):
+    // the existing pointer is sufficient since the relay reads the event row
+    // at publish time — a second pointer would cause a double-publish.
+    const outboxRows = (await db.execute(
+      sql`SELECT aggregate_name, aggregate_id, version FROM castore_outbox WHERE aggregate_id = ${aggregateId};`,
+    )) as unknown;
+    const rows = Array.isArray(outboxRows)
+      ? (outboxRows as unknown[])
+      : ((outboxRows as { rows?: unknown[] }).rows ?? []);
+    expect(rows).toHaveLength(1);
   });
 });

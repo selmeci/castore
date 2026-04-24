@@ -72,25 +72,41 @@ export const runContinuously = async (state: RelayState): Promise<void> => {
 
 /**
  * Sleep that wakes early when `state.stopping` flips to true — so a
- * pending `stop()` resolves within at most one `pollingMs` + whatever
- * was already in-flight.
+ * pending `stop()` resolves within at most `pollingMs` + whatever was
+ * already in-flight.
+ *
+ * Races `setTimeout` against `state.wakeController.signal` (aborted by
+ * `stop()`). The controller replaces the previous 25ms-polling loop: a
+ * single timer + a signal listener instead of a tick-every-25ms drain.
+ * Falls back to a plain `setTimeout` when the controller is absent
+ * (defensive — the factory always attaches one).
  */
-const sleep = (ms: number, state: RelayState): Promise<void> => {
-  const start = Date.now();
-  const tick = 25; // coarse polling on state.stopping keeps the loop tight.
+const sleep = (ms: number, state: RelayState): Promise<void> =>
+  new Promise<void>(resolve => {
+    if (state.stopping) {
+      resolve();
 
-  return new Promise(resolve => {
-    const check = (): void => {
-      if (state.stopping || Date.now() - start >= ms) {
+      return;
+    }
+    const signal = state.wakeController?.signal;
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    if (signal !== undefined) {
+      if (signal.aborted) {
+        clearTimeout(timer);
         resolve();
 
         return;
       }
-      setTimeout(check, Math.min(tick, ms - (Date.now() - start)));
-    };
-    check();
+      signal.addEventListener('abort', onAbort, { once: true });
+    }
   });
-};
 
 export interface StopControl {
   /** Flip the stopping flag and wait for the current runContinuously to unwind. */
@@ -113,6 +129,11 @@ export const makeStop = (
 ): StopControl => ({
   stop: async () => {
     state.stopping = true;
+    // Abort the wake controller so a pending `sleep()` resolves
+    // immediately instead of waiting out its `setTimeout`. The `stopping`
+    // boolean above remains the authoritative loop-exit check; the abort
+    // only cuts the tail-latency of the current sleep.
+    state.wakeController?.abort();
     try {
       await loop;
     } catch (err) {

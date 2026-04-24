@@ -35,6 +35,12 @@ export { DEFAULT_RELAY_OPTIONS };
 export interface CreateOutboxRelayArgs {
   dialect: OutboxDialect;
   adapter: EventStorageAdapter;
+  // `db` and `outboxTable` are intentionally `any`: the factory is dialect-
+  // agnostic and accepts a pg / mysql / sqlite Drizzle `db` handle plus the
+  // matching dialect's `outboxTable` contract. A shared union would couple
+  // this module to all three dialect imports and break tree-shaking for
+  // consumers of a single dialect. The per-dialect types are recovered at
+  // the call sites inside `claim`, `fencedUpdate`, and admin helpers.
   db: any;
   outboxTable: any;
   claim: BoundClaim;
@@ -97,6 +103,7 @@ export const createOutboxRelay = (args: CreateOutboxRelayArgs): OutboxRelay => {
     options,
     claim: args.claim,
     stopping: false,
+    wakeController: new AbortController(),
   };
 
   let loopPromise: Promise<void> | undefined;
@@ -114,6 +121,9 @@ export const createOutboxRelay = (args: CreateOutboxRelayArgs): OutboxRelay => {
         );
       }
       state.stopping = false;
+      // Replace any aborted wake controller from a previous stop() cycle
+      // so this loop's sleeps can wake on a fresh abort signal.
+      state.wakeController = new AbortController();
       loopPromise = runContinuously(state);
 
       return loopPromise;
@@ -132,13 +142,13 @@ export const createOutboxRelay = (args: CreateOutboxRelayArgs): OutboxRelay => {
     },
     retryRow: (rowId, retryOptions) =>
       retryRowImpl(
-        { db: args.db, outboxTable: args.outboxTable },
+        { dialect: args.dialect, db: args.db, outboxTable: args.outboxTable },
         rowId,
         retryOptions,
       ),
     deleteRow: (rowId, deleteOptions) =>
       deleteRowImpl(
-        { db: args.db, outboxTable: args.outboxTable },
+        { dialect: args.dialect, db: args.db, outboxTable: args.outboxTable },
         rowId,
         deleteOptions,
       ),

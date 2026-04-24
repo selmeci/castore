@@ -70,14 +70,43 @@ export const fencedUpdate = async (args: FencedUpdateArgs): Promise<number> => {
 };
 
 /**
+ * Maximum length of the stringified unknown result included in the thrown
+ * error. Keeps operator-visible diagnostics readable without spilling a
+ * potentially huge driver payload into logs.
+ */
+const UNKNOWN_RESULT_PREVIEW_MAX = 200;
+
+const stringifyForError = (value: unknown): string => {
+  let preview: string;
+  try {
+    preview =
+      value !== null && typeof value === 'object'
+        ? JSON.stringify(value)
+        : String(value);
+  } catch {
+    preview = String(value);
+  }
+  if (preview.length > UNKNOWN_RESULT_PREVIEW_MAX) {
+    return `${preview.slice(0, UNKNOWN_RESULT_PREVIEW_MAX)}…`;
+  }
+
+  return preview;
+};
+
+/**
  * Narrow the mysql driver result to an `affectedRows` count without a type
  * cast that hides the shape from readers.
  *
  * drizzle-mysql returns `[ResultSetHeader, FieldPacket[]]` on update() — the
  * header at index 0 carries `affectedRows`. Some driver/pooling combinations
  * yield the header directly; this function handles both shapes.
+ *
+ * If neither shape matches, this throws rather than returning 0 — silently
+ * returning 0 would look identical to "row fenced out" (fence no-op) when
+ * it's actually "driver shape changed and we can't tell what happened",
+ * which could mask real UPDATE failures.
  */
-const extractMysqlAffectedRows = (result: unknown): number => {
+export const extractMysqlAffectedRows = (result: unknown): number => {
   if (Array.isArray(result)) {
     const head = result[0] as { affectedRows?: unknown } | undefined;
     if (head !== undefined && typeof head.affectedRows === 'number') {
@@ -92,7 +121,9 @@ const extractMysqlAffectedRows = (result: unknown): number => {
     }
   }
 
-  return 0;
+  throw new Error(
+    `extractMysqlAffectedRows: unknown mysql driver result shape; expected [ResultSetHeader, FieldPacket[]] or a header-like object carrying numeric affectedRows, got: ${stringifyForError(result)}`,
+  );
 };
 
 /**

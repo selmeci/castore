@@ -30,6 +30,14 @@ export interface RelayState {
   claim: BoundClaim;
   /** Mutated by `stop()` to halt `runContinuously`. */
   stopping: boolean;
+  /**
+   * Aborted by `stop()` in addition to flipping `stopping = true`. The
+   * `runContinuously` sleep awaits this signal alongside its `setTimeout`
+   * so shutdown wakes instantly instead of waiting up to one `pollingMs`
+   * tick. The `stopping` boolean remains the authoritative "should I keep
+   * looping?" check for every other call site.
+   */
+  wakeController?: AbortController;
 }
 
 export interface RunOnceResult {

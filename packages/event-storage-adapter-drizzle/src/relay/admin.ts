@@ -1,5 +1,6 @@
 import { and, eq, isNull } from 'drizzle-orm';
 
+import { extractMysqlAffectedRows } from '../common/outbox/fencedUpdate';
 import type { DeleteRowResult, RetryRowResult } from '../common/outbox/types';
 import { OutboxRowNotFoundError, RetryRowClaimedError } from './errors';
 import type { RelayPublishContext } from './publish';
@@ -14,6 +15,36 @@ export interface RetryRowOptions {
 }
 
 /**
+ * Admin-helper context: same `dialect` + `db` + `outboxTable` triple the
+ * relay threads through publish. Dialect is load-bearing: MySQL rejects
+ * `UPDATE/DELETE ... RETURNING`, so the helpers branch on it to pick between
+ * `.returning()` (pg / sqlite) and the affected-rows-header path (mysql).
+ */
+export type AdminContext = Pick<
+  RelayPublishContext,
+  'dialect' | 'db' | 'outboxTable'
+>;
+
+/**
+ * Execute an UPDATE/DELETE builder and return the affected-row count,
+ * branching on dialect: pg/sqlite chain `.returning({ id })`; mysql reads
+ * `affectedRows` off the ResultSetHeader (mirrors `fencedUpdate`).
+ */
+const runAffecting = async (
+  ctx: AdminContext,
+  builder: any,
+): Promise<number> => {
+  if (ctx.dialect === 'mysql') {
+    return extractMysqlAffectedRows(await builder);
+  }
+  const rows = (await builder.returning({ id: ctx.outboxTable.id })) as {
+    id: string;
+  }[];
+
+  return rows.length;
+};
+
+/**
  * Reset a dead (or otherwise stuck) outbox row so the next `runOnce` picks
  * it up again. Default-safe: refuses rows with a live `claim_token` to
  * avoid racing a worker mid-publish.
@@ -26,17 +57,15 @@ export interface RetryRowOptions {
  * disambiguated with a re-SELECT (not found vs claimed).
  */
 export const retryRow = async (
-  ctx: Pick<RelayPublishContext, 'db' | 'outboxTable'>,
+  ctx: AdminContext,
   rowId: string,
   options: RetryRowOptions = {},
 ): Promise<RetryRowResult> => {
-  const { db, outboxTable } = ctx;
-
   if (options.force === true) {
-    return forceRetry({ db, outboxTable }, rowId);
+    return forceRetry(ctx, rowId);
   }
 
-  const affected = await conditionalClearUnclaimed({ db, outboxTable }, rowId);
+  const affected = await conditionalClearUnclaimed(ctx, rowId);
   if (affected >= 1) {
     return {
       warning: 'at-most-once-not-guaranteed',
@@ -48,17 +77,7 @@ export const retryRow = async (
   // 0 rows affected → either the id is unknown, or the row is currently
   // claimed. Disambiguate with a targeted SELECT so callers get the typed
   // `RetryRowClaimedError` vs `OutboxRowNotFoundError` distinction.
-  const existing = (await db
-    .select({ claim_token: outboxTable.claimToken })
-    .from(outboxTable)
-    .where(eq(outboxTable.id, rowId))
-    .limit(1)) as { claim_token: string | null }[];
-
-  if (existing[0] === undefined) {
-    throw new OutboxRowNotFoundError(rowId);
-  }
-
-  throw new RetryRowClaimedError(rowId);
+  throw await resolveMissingOrClaimedError(ctx, rowId);
 };
 
 const resetSet = {
@@ -71,31 +90,30 @@ const resetSet = {
 };
 
 const conditionalClearUnclaimed = async (
-  ctx: Pick<RelayPublishContext, 'db' | 'outboxTable'>,
+  ctx: AdminContext,
   rowId: string,
 ): Promise<number> => {
   const { db, outboxTable } = ctx;
-  const rows = (await db
+  const builder = db
     .update(outboxTable)
     .set(resetSet)
-    .where(and(eq(outboxTable.id, rowId), isNull(outboxTable.claimToken)))
-    .returning({ id: outboxTable.id })) as { id: string }[];
+    .where(and(eq(outboxTable.id, rowId), isNull(outboxTable.claimToken)));
 
-  return rows.length;
+  return runAffecting(ctx, builder);
 };
 
 const forceRetry = async (
-  ctx: Pick<RelayPublishContext, 'db' | 'outboxTable'>,
+  ctx: AdminContext,
   rowId: string,
 ): Promise<RetryRowResult> => {
   const { db, outboxTable } = ctx;
-  const rows = (await db
+  const builder = db
     .update(outboxTable)
     .set(resetSet)
-    .where(eq(outboxTable.id, rowId))
-    .returning({ id: outboxTable.id })) as { id: string }[];
+    .where(eq(outboxTable.id, rowId));
 
-  if (rows.length === 0) {
+  const affected = await runAffecting(ctx, builder);
+  if (affected === 0) {
     throw new OutboxRowNotFoundError(rowId);
   }
 
@@ -127,13 +145,17 @@ export interface DeleteRowOptions {
  * against. Pass `{ force: true }` to accept the orphaned-message hazard.
  */
 export const deleteRow = async (
-  ctx: Pick<RelayPublishContext, 'db' | 'outboxTable'>,
+  ctx: AdminContext,
   rowId: string,
   options: DeleteRowOptions = {},
 ): Promise<DeleteRowResult> => {
   const { db, outboxTable } = ctx;
 
   if (options.force === true) {
+    // Forced path issues a plain DELETE with no `.returning()` chain, so
+    // it's already dialect-agnostic. We intentionally do not re-SELECT to
+    // confirm the row existed — the no-op-for-unknown-id contract is part
+    // of the documented force semantics.
     await db.delete(outboxTable).where(eq(outboxTable.id, rowId));
 
     return { rowId };
@@ -142,24 +164,36 @@ export const deleteRow = async (
   // Default-safe: atomic conditional DELETE — only proceeds when the row
   // exists AND is not claimed. 0 rows affected disambiguates (not found
   // vs claimed) via a targeted SELECT.
-  const deleted = (await db
+  const builder = db
     .delete(outboxTable)
-    .where(and(eq(outboxTable.id, rowId), isNull(outboxTable.claimToken)))
-    .returning({ id: outboxTable.id })) as { id: string }[];
+    .where(and(eq(outboxTable.id, rowId), isNull(outboxTable.claimToken)));
 
-  if (deleted.length >= 1) {
+  const deletedCount = await runAffecting(ctx, builder);
+  if (deletedCount >= 1) {
     return { rowId };
   }
 
+  throw await resolveMissingOrClaimedError(ctx, rowId);
+};
+
+/**
+ * Disambiguate a 0-row conditional UPDATE/DELETE with a targeted SELECT:
+ * missing (`OutboxRowNotFoundError`) vs claimed (`RetryRowClaimedError`).
+ * Returns (not throws) so callers end with `throw await ...` and TS's
+ * `noImplicitReturns` sees the branch as terminal.
+ */
+const resolveMissingOrClaimedError = async (
+  ctx: AdminContext,
+  rowId: string,
+): Promise<OutboxRowNotFoundError | RetryRowClaimedError> => {
+  const { db, outboxTable } = ctx;
   const existing = (await db
     .select({ claim_token: outboxTable.claimToken })
     .from(outboxTable)
     .where(eq(outboxTable.id, rowId))
     .limit(1)) as { claim_token: string | null }[];
 
-  if (existing[0] === undefined) {
-    throw new OutboxRowNotFoundError(rowId);
-  }
-
-  throw new RetryRowClaimedError(rowId);
+  return existing[0] === undefined
+    ? new OutboxRowNotFoundError(rowId)
+    : new RetryRowClaimedError(rowId);
 };

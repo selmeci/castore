@@ -8,6 +8,12 @@ import preferArrow from 'eslint-plugin-prefer-arrow';
 import prettier from 'eslint-plugin-prettier';
 import globals from 'globals';
 
+// The `no-restricted-imports` regex is duplicated across the JS and TS rule
+// blocks below. Hoist it to a single constant so the two blocks cannot drift
+// (e.g., adding a new public sub-path export to only one of them).
+const CASTORE_INTERNAL_IMPORT_REGEX =
+  '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite|relay)$)[^/]+/.+';
+
 export default [
   {
     ignores: [
@@ -91,8 +97,7 @@ export default [
               // Every other internal @castore/*/<module> path stays forbidden.
               // Using `regex` because flat-config `no-restricted-imports`
               // doesn't support an `allow` list on group patterns.
-              regex:
-                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite|relay)$)[^/]+/.+',
+              regex: CASTORE_INTERNAL_IMPORT_REGEX,
               message:
                 'import of internal modules must be done at the root level.',
             },
@@ -205,8 +210,7 @@ export default [
               // `@castore/*/*` but excludes the three declared sub-path
               // exports of @castore/event-storage-adapter-drizzle, which are
               // part of that package's public surface.
-              regex:
-                '^@castore/(?!event-storage-adapter-drizzle/(?:pg|mysql|sqlite|relay)$)[^/]+/.+',
+              regex: CASTORE_INTERNAL_IMPORT_REGEX,
               message:
                 'import of internal modules must be done at the root level.',
             },

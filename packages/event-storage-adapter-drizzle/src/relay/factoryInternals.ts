@@ -33,10 +33,31 @@ export const DEFAULT_RELAY_OPTIONS: Required<RelayOptions> = {
  * holds — a publish that outlives the claim TTL can be reclaimed by
  * another worker while this one is still in flight (parent R14).
  */
+/**
+ * Strip keys whose value is `undefined` so spreading the result over the
+ * defaults cannot clobber a default with `undefined`. Without
+ * `exactOptionalPropertyTypes` in the project's tsconfig, a caller CAN
+ * type-legally pass `{ publishTimeoutMs: undefined }`; this helper makes
+ * the merge robust against that without per-field boilerplate.
+ */
+const stripUndefined = <T extends object>(obj: T): Partial<T> => {
+  const out: Partial<T> = {};
+  for (const key of Object.keys(obj) as (keyof T)[]) {
+    if (obj[key] !== undefined) {
+      out[key] = obj[key];
+    }
+  }
+
+  return out;
+};
+
 export const resolveOptions = (
   userOptions: RelayOptions | undefined,
 ): Required<RelayOptions> => {
-  const merged = { ...DEFAULT_RELAY_OPTIONS, ...(userOptions ?? {}) };
+  const merged: Required<RelayOptions> = {
+    ...DEFAULT_RELAY_OPTIONS,
+    ...stripUndefined(userOptions ?? {}),
+  };
   // When the caller tunes `claimTimeoutMs` without touching
   // `publishTimeoutMs`, re-derive the default ratio from their TTL rather
   // than inheriting the static 150s default that could now be too large.

@@ -88,18 +88,19 @@ export const publish = async ({
   publishTimeoutMs,
 }: PublishArgs): Promise<PublishOutcome> => {
   return withTimeout(
-    () => publishInner({ row, registry, ctx, hooks }),
+    signal => publishInner({ row, registry, ctx, hooks }, signal),
     publishTimeoutMs,
     row.id,
   );
 };
 
-const publishInner = async ({
-  row,
-  registry,
-  ctx,
-  hooks,
-}: Omit<PublishArgs, 'publishTimeoutMs'>): Promise<PublishOutcome> => {
+// `signal` is threaded from `withTimeout` so a future signal-aware core can
+// cancel in-flight awaits on timeout; today it's a forward-compat stub.
+const publishInner = async (
+  { row, registry, ctx, hooks }: Omit<PublishArgs, 'publishTimeoutMs'>,
+  signal: AbortSignal,
+): Promise<PublishOutcome> => {
+  void signal;
   const lookup = ctx.adapter[OUTBOX_GET_EVENT_SYMBOL];
   // A `return undefined` from the lookup is the adapter's explicit signal
   // that the source event row is gone (crypto-shredded) — permanent, route

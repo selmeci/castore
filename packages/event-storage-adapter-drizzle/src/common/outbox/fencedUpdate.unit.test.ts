@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 
 import { outboxTable } from '../../sqlite/schema';
-import { fencedUpdate } from './fencedUpdate';
+import { extractMysqlAffectedRows, fencedUpdate } from './fencedUpdate';
 
 /**
  * Tests the fencing-token rule (parent R14):
@@ -119,6 +119,11 @@ describe('fencedUpdate', () => {
     });
 
     expect(affected).toBe(0);
+
+    const rows = bs
+      .prepare('SELECT processed_at FROM castore_outbox WHERE id = ?')
+      .all(rowId) as { processed_at: string | null }[];
+    expect(rows[0]?.processed_at).toBeNull();
   });
 
   it('supports setting multiple columns in one call', async () => {
@@ -159,5 +164,33 @@ describe('fencedUpdate', () => {
       claim_token: null,
       claimed_at: null,
     });
+  });
+});
+
+/**
+ * Guards the mysql result-shape normaliser against silent fallback. A
+ * driver/pool combo that returns something we don't recognise must surface
+ * as a loud error, not a 0-affected-rows no-op that looks identical to
+ * "row fenced out".
+ */
+describe('extractMysqlAffectedRows', () => {
+  it('reads affectedRows from the [ResultSetHeader, FieldPacket[]] tuple', () => {
+    expect(extractMysqlAffectedRows([{ affectedRows: 1 }, []])).toBe(1);
+  });
+
+  it('reads affectedRows from a bare header object', () => {
+    expect(extractMysqlAffectedRows({ affectedRows: 3 })).toBe(3);
+  });
+
+  it('throws with function name + truncated preview on unknown shape', () => {
+    expect(() => extractMysqlAffectedRows({ rowsAffected: 1 })).toThrow(
+      /extractMysqlAffectedRows.*rowsAffected/,
+    );
+  });
+
+  it('throws when the tuple head is not header-like', () => {
+    expect(() => extractMysqlAffectedRows([{ foo: 'bar' }, []])).toThrow(
+      /extractMysqlAffectedRows/,
+    );
   });
 });

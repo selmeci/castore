@@ -5,6 +5,10 @@ import { OutboxNotEnabledError } from './errors';
 
 export type AssertOutboxEnabledMode = 'warn' | 'throw';
 
+// Module-level flag so `'warn'` mode genuinely logs once per process, as the
+// docstring promises. Reset via `__resetWarnedForTests` (test-only helper).
+let warnedOutboxOnce = false;
+
 /**
  * Bootstrap aid for apps that cannot run safely without the outbox
  * (finance / N4-bound profiles — parent R23). Defaults to `'warn'` so
@@ -33,8 +37,20 @@ export const assertOutboxEnabled = (
   }
 
   if (process.env.NODE_ENV === 'production') {
+    if (warnedOutboxOnce) {
+      return;
+    }
+    warnedOutboxOnce = true;
     console.warn(
       '[castore] assertOutboxEnabled: adapter is missing the outbox capability. This app is NOT safe against dual-write loss under N4. Pass `{ mode: "throw" }` to enforce.',
     );
   }
+};
+
+/**
+ * Test-only helper to reset the module-level "warned once" flag between
+ * cases. Not part of the public API — exported only for `*.unit.test.ts`.
+ */
+export const __resetWarnedForTests = (): void => {
+  warnedOutboxOnce = false;
 };

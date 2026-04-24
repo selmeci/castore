@@ -169,7 +169,12 @@ const stringifyError = (err: unknown): string => {
     return err;
   }
   try {
-    return JSON.stringify(err);
+    // JSON.stringify returns `undefined` (not a string, not a throw) for
+    // `undefined`, symbols, and functions. Guard so the return type promise
+    // is never violated — callers downstream treat this as a string.
+    const raw = JSON.stringify(err);
+
+    return typeof raw === 'string' ? raw : String(err ?? 'undefined');
   } catch {
     return String(err);
   }

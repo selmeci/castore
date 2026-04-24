@@ -67,4 +67,27 @@ describe('scrubLastError', () => {
     const out = scrubLastError('{"a":{"b":{"c":{"d":{"e":"leaked"}}}}}');
     expect(out).not.toContain('leaked');
   });
+
+  it('returns a string when err is undefined (JSON.stringify returns undefined)', () => {
+    // JSON.stringify(undefined) returns the JS value undefined, not a string
+    // and not a throw — guard must coerce to a string.
+    const out = scrubLastError(undefined);
+    expect(typeof out).toBe('string');
+    expect(out).toBe('undefined');
+  });
+
+  it('returns a string when err is a Symbol (JSON.stringify returns undefined)', () => {
+    // JSON.stringify on a Symbol returns undefined; without the guard the
+    // function would return undefined and replaceFragments would crash.
+    const out = scrubLastError(Symbol('boom'));
+    expect(typeof out).toBe('string');
+    expect(out.length).toBeGreaterThan(0);
+  });
+
+  it('returns a string when err is a bare function (JSON.stringify returns undefined)', () => {
+    // Functions serialize to undefined under JSON.stringify.
+    const out = scrubLastError(() => 'nope');
+    expect(typeof out).toBe('string');
+    expect(out.length).toBeGreaterThan(0);
+  });
 });

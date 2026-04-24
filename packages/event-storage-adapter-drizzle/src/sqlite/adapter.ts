@@ -115,11 +115,29 @@ export class DrizzleSqliteEventStorageAdapter implements EventStorageAdapter {
     if (this.outboxTable === undefined) {
       return;
     }
-    await tx.insert(this.outboxTable).values({
-      aggregateName,
-      aggregateId,
-      version,
-    });
+    // Idempotent insert on the `(aggregate_name, aggregate_id, version)`
+    // unique index: the outbox row is a pointer to the event row, and by
+    // construction there can only ever be one pointer per event. A plain
+    // insert would violate the unique constraint when `force: true` replays
+    // an already-outboxed event (the event upsert succeeds via ON CONFLICT
+    // DO UPDATE, then this insert would blow up the whole transaction).
+    // Since the relay reads the event payload at publish time, the existing
+    // pointer is sufficient — re-emitting a new row would double-publish
+    // the force-replayed event to the bus with no correctness benefit.
+    await tx
+      .insert(this.outboxTable)
+      .values({
+        aggregateName,
+        aggregateId,
+        version,
+      })
+      .onConflictDoNothing({
+        target: [
+          this.outboxTable.aggregateName,
+          this.outboxTable.aggregateId,
+          this.outboxTable.version,
+        ],
+      });
   }
 
   private buildInsertValues(
