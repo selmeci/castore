@@ -19,6 +19,7 @@ import {
   DuplicateEventStoreIdError,
   OutboxNotEnabledError,
   RegistryEntryMismatchError,
+  UnsupportedChannelTypeError,
 } from './errors';
 import { createOutboxRelay } from './factory';
 
@@ -156,6 +157,36 @@ describe('createOutboxRelay', () => {
         ],
       }),
     ).toThrow(RegistryEntryMismatchError);
+  });
+
+  it('rejects a registry entry whose channel is neither Notification nor StateCarrying', () => {
+    const bogusChannel = {
+      messageChannelType: 'bogus',
+      messageChannelId: 'bogus',
+      publishMessage: async () => undefined,
+    } as unknown as RelayRegistryEntry['channel'];
+    expect(() =>
+      createOutboxRelay({
+        dialect: 'sqlite',
+        adapter: makeOutboxAdapter(),
+        db,
+        outboxTable,
+        claim,
+        registry: [
+          {
+            eventStoreId: 'counters',
+            connectedEventStore: new ConnectedEventStore(
+              countersStore,
+              new NotificationMessageBus({
+                messageBusId: 'unused',
+                sourceEventStores: [countersStore],
+              }),
+            ),
+            channel: bogusChannel,
+          },
+        ],
+      }),
+    ).toThrow(UnsupportedChannelTypeError);
   });
 
   it('constructs with a valid single-entry registry', () => {

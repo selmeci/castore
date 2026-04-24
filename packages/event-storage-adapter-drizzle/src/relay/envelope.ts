@@ -5,6 +5,19 @@ import {
 import type { EventDetail } from '@castore/core';
 
 import type { OutboxRow, RelayRegistryEntry } from '../common/outbox/types';
+import { UnsupportedChannelTypeError } from './errors';
+
+/**
+ * Runtime channel-type guard used by both `buildEnvelope` (per-publish) and
+ * `createOutboxRelay` (construction). Centralises the set of supported
+ * channel classes so a new class (e.g. v1.1 `AggregateExistsMessageChannel`
+ * support) only needs to be added in one place.
+ */
+export const isSupportedChannel = (
+  channel: RelayRegistryEntry['channel'],
+): boolean =>
+  channel instanceof NotificationMessageChannel ||
+  channel instanceof StateCarryingMessageChannel;
 
 /**
  * Sentinel returned by `buildEnvelope` when a StateCarrying reconstruction
@@ -49,7 +62,5 @@ export const buildEnvelope = async (
     return { eventStoreId: entry.eventStoreId, event: eventDetail, aggregate };
   }
 
-  throw new Error(
-    `Unsupported channel type on registry entry for eventStoreId=${entry.eventStoreId}`,
-  );
+  throw new UnsupportedChannelTypeError(entry.eventStoreId);
 };

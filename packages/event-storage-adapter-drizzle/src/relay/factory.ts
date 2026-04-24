@@ -14,10 +14,12 @@ import {
   retryRow as retryRowImpl,
   type RetryRowOptions,
 } from './admin';
+import { isSupportedChannel } from './envelope';
 import {
   DuplicateEventStoreIdError,
   OutboxNotEnabledError,
   RegistryEntryMismatchError,
+  UnsupportedChannelTypeError,
 } from './errors';
 import type { RelayPublishContext } from './publish';
 import { makeStop, runContinuously } from './runContinuously';
@@ -146,6 +148,9 @@ const buildRegistryMap = (
         entry.eventStoreId,
         entry.connectedEventStore.eventStoreId,
       );
+    }
+    if (!isSupportedChannel(entry.channel)) {
+      throw new UnsupportedChannelTypeError(entry.eventStoreId);
     }
     map.set(entry.eventStoreId, { ...entry });
   }

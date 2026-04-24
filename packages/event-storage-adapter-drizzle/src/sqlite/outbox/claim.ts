@@ -1,6 +1,7 @@
 import { and, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { BaseSQLiteDatabase } from 'drizzle-orm/sqlite-core';
 
+import { selectOutboxColumns } from '../../common/outbox/selectColumns';
 import type { OutboxRow } from '../../common/outbox/types';
 import type { SqliteOutboxTableContract } from '../contract';
 
@@ -14,26 +15,6 @@ export interface SqliteClaimArgs {
   workerClaimToken: string;
   aggregateNames: string[];
 }
-
-/**
- * Explicit snake_case column mapping so the UPDATE's `RETURNING` shape
- * matches `OutboxRow` — callers of the relay read `row.claim_token` etc.,
- * not Drizzle's camelCase column names.
- */
-const selectOutboxColumns = (outbox: SqliteOutboxTableContract) => ({
-  id: outbox.id,
-  aggregate_name: outbox.aggregateName,
-  aggregate_id: outbox.aggregateId,
-  version: outbox.version,
-  created_at: outbox.createdAt,
-  claim_token: outbox.claimToken,
-  claimed_at: outbox.claimedAt,
-  processed_at: outbox.processedAt,
-  attempts: outbox.attempts,
-  last_error: outbox.lastError,
-  last_attempt_at: outbox.lastAttemptAt,
-  dead_at: outbox.deadAt,
-});
 
 /**
  * sqlite claim primitive.

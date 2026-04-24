@@ -141,10 +141,16 @@ describe('handleFailure', () => {
       .get(row.id) as {
       attempts: number;
       dead_at: string | null;
+      claim_token: string | null;
+      claimed_at: string | null;
     };
 
     expect(persisted.attempts).toBe(3);
     expect(persisted.dead_at).not.toBeNull();
+    // Dead rows must also release the claim so `retryRow` (default-safe)
+    // accepts them without requiring `force: true`.
+    expect(persisted.claim_token).toBeNull();
+    expect(persisted.claimed_at).toBeNull();
 
     expect(onDead).toHaveBeenCalledOnce();
     expect(onFail).not.toHaveBeenCalled();

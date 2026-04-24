@@ -4,7 +4,7 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 
 import { outboxTable } from '../sqlite/schema';
 import { deleteRow, retryRow } from './admin';
-import { RetryRowClaimedError } from './errors';
+import { OutboxRowNotFoundError, RetryRowClaimedError } from './errors';
 
 const createOutboxDDL = `
   CREATE TABLE castore_outbox (
@@ -122,10 +122,10 @@ describe('admin API', () => {
       expect(row.claim_token).toBeNull();
     });
 
-    it('throws when the row id does not exist', async () => {
-      await expect(retryRow({ db, outboxTable }, 'missing-id')).rejects.toThrow(
-        /not found/,
-      );
+    it('throws OutboxRowNotFoundError when the row id does not exist', async () => {
+      await expect(
+        retryRow({ db, outboxTable }, 'missing-id'),
+      ).rejects.toBeInstanceOf(OutboxRowNotFoundError);
     });
   });
 

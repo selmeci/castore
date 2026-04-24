@@ -1,6 +1,7 @@
 import { and, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { MySqlDatabase } from 'drizzle-orm/mysql-core';
 
+import { selectOutboxColumns } from '../../common/outbox/selectColumns';
 import type { OutboxRow } from '../../common/outbox/types';
 import type { MysqlOutboxTableContract } from '../contract';
 
@@ -49,9 +50,12 @@ export const claimMysql = async (
 
   return db.transaction(async tx => {
     // MySQL's INTERVAL requires a parse-time expression, so inline the
-    // seconds count as a raw SQL fragment rather than a bound parameter.
-    const seconds = Math.max(0, Math.floor(claimTimeoutMs / 1000));
-    const ttlCutoff = sql`DATE_SUB(NOW(3), INTERVAL ${sql.raw(String(seconds))} SECOND)`;
+    // microsecond count as a raw SQL fragment rather than a bound parameter.
+    // Using microseconds (1ms = 1000us) preserves sub-second precision that
+    // `INTERVAL N SECOND` with an integer argument would silently drop for
+    // TTLs below 1 second. Safe from injection: explicit integer coercion.
+    const micros = Math.max(0, Math.floor(claimTimeoutMs * 1000));
+    const ttlCutoff = sql`DATE_SUB(NOW(3), INTERVAL ${sql.raw(String(micros))} MICROSECOND)`;
 
     // The `earliest-per-aggregate` subquery: for each aggregate, take only
     // MIN(version) among non-processed, non-dead rows. Candidates must
@@ -132,18 +136,3 @@ const extractIds = (raw: unknown): string[] => {
     .map(row => (row as { id?: unknown }).id)
     .filter((v): v is string => typeof v === 'string');
 };
-
-const selectOutboxColumns = (outbox: MysqlOutboxTableContract) => ({
-  id: outbox.id,
-  aggregate_name: outbox.aggregateName,
-  aggregate_id: outbox.aggregateId,
-  version: outbox.version,
-  created_at: outbox.createdAt,
-  claim_token: outbox.claimToken,
-  claimed_at: outbox.claimedAt,
-  processed_at: outbox.processedAt,
-  attempts: outbox.attempts,
-  last_error: outbox.lastError,
-  last_attempt_at: outbox.lastAttemptAt,
-  dead_at: outbox.deadAt,
-});

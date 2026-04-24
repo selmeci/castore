@@ -52,12 +52,15 @@ export const handleFailure = async ({
     lastAttemptAt: dialectNow(ctx.dialect),
   };
 
+  // Always release the claim_token in both branches: on the failure path so
+  // the next runOnce can re-claim after backoff, and on the dead path so
+  // `retryRow` (default-safe) does not refuse the dead row because its own
+  // `claim_token IS NOT NULL` guard still sees the worker's stale token.
+  set.claimToken = null;
+  set.claimedAt = null;
+
   if (exhausted) {
     set.deadAt = dialectNow(ctx.dialect);
-  } else {
-    // Release the claim so the next runOnce can re-claim after backoff.
-    set.claimToken = null;
-    set.claimedAt = null;
   }
 
   const affected = await fencedUpdate({

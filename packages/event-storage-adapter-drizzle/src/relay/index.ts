@@ -26,8 +26,10 @@ export type { CreateOutboxRelayArgs, OutboxRelay } from './factory';
 export {
   DuplicateEventStoreIdError,
   OutboxNotEnabledError,
+  OutboxRowNotFoundError,
   RegistryEntryMismatchError,
   RetryRowClaimedError,
+  UnsupportedChannelTypeError,
 } from './errors';
 
 export type { RetryRowOptions } from './admin';

@@ -138,6 +138,11 @@ const transitionToDead = async ({
     set: {
       deadAt: dialectNow(ctx.dialect),
       lastError: scrubLastError(lastError),
+      // Release the claim so `retryRow` (default-safe) accepts the dead row
+      // without requiring `force: true`. The fencing predicate still guards
+      // this UPDATE against concurrent reclaim.
+      claimToken: null,
+      claimedAt: null,
     },
   });
 

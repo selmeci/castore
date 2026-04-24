@@ -1,7 +1,7 @@
 import { eq } from 'drizzle-orm';
 
 import type { DeleteRowResult, RetryRowResult } from '../common/outbox/types';
-import { RetryRowClaimedError } from './errors';
+import { OutboxRowNotFoundError, RetryRowClaimedError } from './errors';
 import type { RelayPublishContext } from './publish';
 
 export interface RetryRowOptions {
@@ -32,7 +32,7 @@ export const retryRow = async (
 
   const row = rows[0];
   if (row === undefined) {
-    throw new Error(`Outbox row ${rowId} not found.`);
+    throw new OutboxRowNotFoundError(rowId);
   }
 
   if (row.claim_token !== null && options.force !== true) {

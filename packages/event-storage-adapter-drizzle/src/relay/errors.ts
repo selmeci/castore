@@ -33,6 +33,21 @@ export class RetryRowClaimedError extends Error {
 }
 
 /**
+ * Thrown by `retryRow` / `deleteRow` when the target `rowId` is not in the
+ * outbox table. Typed so callers can discriminate "row missing" from other
+ * admin failures via `instanceof`.
+ */
+export class OutboxRowNotFoundError extends Error {
+  readonly name = 'OutboxRowNotFoundError';
+  readonly rowId: string;
+
+  constructor(rowId: string) {
+    super(`Outbox row ${rowId} not found.`);
+    this.rowId = rowId;
+  }
+}
+
+/**
  * Thrown by `createOutboxRelay` when the registry array contains the same
  * `eventStoreId` twice — would silently drop one of the channels at runtime.
  */
@@ -62,5 +77,24 @@ export class RegistryEntryMismatchError extends Error {
     );
     this.declared = declared;
     this.actual = actual;
+  }
+}
+
+/**
+ * Thrown by `createOutboxRelay` when a registry entry's `channel` is not a
+ * `NotificationMessageChannel` or `StateCarryingMessageChannel`. Any other
+ * channel class (e.g. `AggregateExistsMessageChannel`) would pass
+ * construction and then dead-transition every row at publish time — this
+ * guard fails fast at factory time instead.
+ */
+export class UnsupportedChannelTypeError extends Error {
+  readonly name = 'UnsupportedChannelTypeError';
+  readonly eventStoreId: string;
+
+  constructor(eventStoreId: string) {
+    super(
+      `Unsupported channel type on registry entry for eventStoreId="${eventStoreId}". Expected NotificationMessageChannel or StateCarryingMessageChannel.`,
+    );
+    this.eventStoreId = eventStoreId;
   }
 }
