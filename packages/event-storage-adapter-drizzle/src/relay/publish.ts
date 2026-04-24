@@ -14,6 +14,7 @@ import type {
 } from '../common/outbox/types';
 import { AGGREGATE_MISSING, buildEnvelope } from './envelope';
 import { dispatchOnDead } from './hooks';
+import { withTimeout } from './withTimeout';
 
 /**
  * Assert that a claimed row has a non-null `claim_token`. Every row reaching
@@ -63,6 +64,7 @@ export interface PublishArgs {
   registry: ReadonlyMap<string, RelayRegistryEntry>;
   ctx: RelayPublishContext;
   hooks: RelayHooks;
+  publishTimeoutMs: number;
 }
 
 /**
@@ -83,7 +85,21 @@ export const publish = async ({
   registry,
   ctx,
   hooks,
+  publishTimeoutMs,
 }: PublishArgs): Promise<PublishOutcome> => {
+  return withTimeout(
+    () => publishInner({ row, registry, ctx, hooks }),
+    publishTimeoutMs,
+    row.id,
+  );
+};
+
+const publishInner = async ({
+  row,
+  registry,
+  ctx,
+  hooks,
+}: Omit<PublishArgs, 'publishTimeoutMs'>): Promise<PublishOutcome> => {
   const lookup = ctx.adapter[OUTBOX_GET_EVENT_SYMBOL];
   // A `return undefined` from the lookup is the adapter's explicit signal
   // that the source event row is gone (crypto-shredded) — permanent, route

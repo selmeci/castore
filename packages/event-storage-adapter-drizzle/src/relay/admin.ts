@@ -106,17 +106,60 @@ const forceRetry = async (
   };
 };
 
+export interface DeleteRowOptions {
+  /**
+   * When `true`, delete the row even if it is currently claimed by a
+   * worker. Operator accepts that any in-flight publish will land on the
+   * bus with no matching DB trace — `onDead` will never fire for this
+   * row, operator-side reconciliation is the only recourse. The default
+   * (`force: false`) refuses claimed rows.
+   */
+  force?: boolean;
+}
+
 /**
  * Delete an outbox row. Useful for GDPR erasure, or for unblocking an
  * aggregate whose dead v1 no longer has downstream value. The event row
  * itself is untouched.
+ *
+ * Default-safe: refuses rows with a live `claim_token` to avoid leaving
+ * an in-flight worker publishing to the bus with no DB row to correlate
+ * against. Pass `{ force: true }` to accept the orphaned-message hazard.
  */
 export const deleteRow = async (
   ctx: Pick<RelayPublishContext, 'db' | 'outboxTable'>,
   rowId: string,
+  options: DeleteRowOptions = {},
 ): Promise<DeleteRowResult> => {
   const { db, outboxTable } = ctx;
-  await db.delete(outboxTable).where(eq(outboxTable.id, rowId));
 
-  return { rowId };
+  if (options.force === true) {
+    await db.delete(outboxTable).where(eq(outboxTable.id, rowId));
+
+    return { rowId };
+  }
+
+  // Default-safe: atomic conditional DELETE — only proceeds when the row
+  // exists AND is not claimed. 0 rows affected disambiguates (not found
+  // vs claimed) via a targeted SELECT.
+  const deleted = (await db
+    .delete(outboxTable)
+    .where(and(eq(outboxTable.id, rowId), isNull(outboxTable.claimToken)))
+    .returning({ id: outboxTable.id })) as { id: string }[];
+
+  if (deleted.length >= 1) {
+    return { rowId };
+  }
+
+  const existing = (await db
+    .select({ claim_token: outboxTable.claimToken })
+    .from(outboxTable)
+    .where(eq(outboxTable.id, rowId))
+    .limit(1)) as { claim_token: string | null }[];
+
+  if (existing[0] === undefined) {
+    throw new OutboxRowNotFoundError(rowId);
+  }
+
+  throw new RetryRowClaimedError(rowId);
 };

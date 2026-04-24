@@ -151,6 +151,7 @@ describe('publish', () => {
       registry,
       ctx: { ...ctx(), adapter },
       hooks: {},
+      publishTimeoutMs: 10_000,
     });
 
     expect(result).toBe('ok');
@@ -204,6 +205,7 @@ describe('publish', () => {
       registry: new Map([[registryEntry.eventStoreId, registryEntry]]),
       ctx: { ...ctx(), adapter },
       hooks: {},
+      publishTimeoutMs: 10_000,
     });
 
     expect(result).toBe('ok');
@@ -241,6 +243,7 @@ describe('publish', () => {
       ]),
       ctx: { ...ctx(), adapter },
       hooks: { onDead },
+      publishTimeoutMs: 10_000,
     });
 
     expect(result).toBe('dead');
@@ -279,6 +282,7 @@ describe('publish', () => {
       registry: new Map(), // empty registry
       ctx: { ...ctx(), adapter },
       hooks: { onDead },
+      publishTimeoutMs: 10_000,
     });
 
     expect(result).toBe('dead');
@@ -330,6 +334,7 @@ describe('publish', () => {
       ]),
       ctx: { ...ctx(), adapter },
       hooks: {},
+      publishTimeoutMs: 10_000,
     });
 
     expect(result).toBe('fenced-no-op');
@@ -367,10 +372,58 @@ describe('publish', () => {
       ]),
       ctx: { ...ctx(), adapter },
       hooks: { onDead },
+      publishTimeoutMs: 10_000,
     });
 
     expect(result).toBe('dead');
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
+  });
+
+  it('rejects with OutboxPublishTimeoutError when channel.publishMessage exceeds the cap', async () => {
+    const row = makeRow();
+    await seedRow(row);
+
+    const event = {
+      aggregateId: row.aggregate_id,
+      version: row.version,
+      type: 'COUNTER_INCREMENTED' as const,
+      timestamp: '2026-04-20T00:00:00.000Z',
+    };
+    const adapter = makeAdapter(async () => event);
+
+    const bus = makeNotificationBus();
+    vi.spyOn(bus, 'publishMessage').mockImplementation(
+      () => new Promise<void>(() => {}), // never resolves
+    );
+
+    await expect(
+      publish({
+        row,
+        registry: new Map([
+          [
+            'counters',
+            {
+              eventStoreId: 'counters',
+              connectedEventStore: new ConnectedEventStore(
+                counterEventStore,
+                bus,
+              ),
+              channel: bus,
+            },
+          ],
+        ]),
+        ctx: { ...ctx(), adapter },
+        hooks: {},
+        publishTimeoutMs: 15,
+      }),
+    ).rejects.toHaveProperty('name', 'OutboxPublishTimeoutError');
+
+    // Row is NOT marked processed — the timeout leaves it claimed for
+    // runOnce's retry path to handle via handleFailure.
+    const [persisted] = bs
+      .prepare('SELECT processed_at FROM castore_outbox WHERE id = ?')
+      .all(row.id) as { processed_at: string | null }[];
+    expect(persisted?.processed_at).toBeNull();
   });
 });

@@ -2,11 +2,36 @@ import { computeBackoffMs } from '../common/outbox/backoff';
 import { runOnce, type RelayState } from './runOnce';
 
 /**
+ * Error classes that indicate a programming bug in the relay itself
+ * (or in a consumer-supplied hook / adapter / claim function) rather
+ * than a transient DB / network condition. These should NOT be swallowed
+ * and retried forever — a TypeError looping silently is a production
+ * incident waiting to happen. Instead, the supervisor re-throws them so
+ * the surrounding runtime (process manager, k8s, Lambda) can restart on
+ * fresh code or surface the failure to the operator.
+ */
+const PROGRAMMING_ERROR_CLASSES = [
+  TypeError,
+  RangeError,
+  ReferenceError,
+  SyntaxError,
+] as const;
+
+const isProgrammingError = (err: unknown): boolean =>
+  PROGRAMMING_ERROR_CLASSES.some(cls => err instanceof cls);
+
+/**
  * Supervised `runOnce` loop. A single transient DB failure in the
  * claim phase (connection dropped, advisory-lock timeout, deadlock
  * retry) must not kill the relay process: wrap every iteration in
  * try/catch, log, apply the same backoff used by the publish retry
- * path, and continue. Only `state.stopping = true` ends the loop.
+ * path, and continue. Only `state.stopping = true` (or an unrecoverable
+ * programming error, see below) ends the loop.
+ *
+ * Programming errors (TypeError, RangeError, ReferenceError, SyntaxError)
+ * are re-thrown so the process manager can restart the worker on fresh
+ * code or alert the operator. Swallowing them would produce a silent
+ * infinite retry loop on a logic bug.
  *
  * The in-memory consecutive-failure counter is reset on any successful
  * iteration, so a transient blip does not permanently slow the relay.
@@ -23,6 +48,13 @@ export const runContinuously = async (state: RelayState): Promise<void> => {
         await sleep(state.options.pollingMs, state);
       }
     } catch (err) {
+      if (isProgrammingError(err)) {
+        console.error(
+          '[outbox relay] runOnce threw a programming error — aborting the loop so the runtime can restart on fixed code:',
+          err,
+        );
+        throw err;
+      }
       consecutiveClaimFailures += 1;
       console.error(
         `[outbox relay] runOnce failed (attempt ${consecutiveClaimFailures}):`,

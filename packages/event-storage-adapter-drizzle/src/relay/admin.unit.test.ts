@@ -172,9 +172,46 @@ describe('admin API', () => {
       expect(remaining).toBe(0);
     });
 
-    it('is a no-op for an unknown id (no throw)', async () => {
+    it('default-safe throws when row is currently claimed by a worker', async () => {
+      const id = await seed({
+        claimToken: 'worker-1',
+        claimedAt: new Date().toISOString(),
+        deadAt: null,
+      });
+      await expect(deleteRow({ db, outboxTable }, id)).rejects.toBeInstanceOf(
+        RetryRowClaimedError,
+      );
+      const row = bs
+        .prepare('SELECT claim_token FROM castore_outbox WHERE id = ?')
+        .get(id) as { claim_token: string | null };
+      // Row is not deleted; worker's claim survives.
+      expect(row.claim_token).toBe('worker-1');
+    });
+
+    it('force: true deletes even a claimed row (operator accepts hazard)', async () => {
+      const id = await seed({
+        claimToken: 'worker-1',
+        claimedAt: new Date().toISOString(),
+        deadAt: null,
+      });
+      await deleteRow({ db, outboxTable }, id, { force: true });
+      const count = (
+        bs.prepare('SELECT COUNT(*) AS c FROM castore_outbox').get() as {
+          c: number;
+        }
+      ).c;
+      expect(count).toBe(0);
+    });
+
+    it('throws OutboxRowNotFoundError for an unknown id (default-safe)', async () => {
       await expect(
         deleteRow({ db, outboxTable }, 'missing-id'),
+      ).rejects.toBeInstanceOf(OutboxRowNotFoundError);
+    });
+
+    it('force: true is a no-op for an unknown id (no throw)', async () => {
+      await expect(
+        deleteRow({ db, outboxTable }, 'missing-id', { force: true }),
       ).resolves.toEqual({ rowId: 'missing-id' });
     });
   });

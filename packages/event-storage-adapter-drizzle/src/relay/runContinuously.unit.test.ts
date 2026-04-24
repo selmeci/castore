@@ -121,6 +121,7 @@ describe('runContinuously + makeStop', () => {
         claimTimeoutMs: 60_000,
         pollingMs: overrides.pollingMs ?? 40,
         batchSize: 10,
+        publishTimeoutMs: 30_000,
       },
       claim:
         overrides.claim ?? (args => claimSqlite({ db, outboxTable, ...args })),
@@ -187,6 +188,19 @@ describe('runContinuously + makeStop', () => {
         .get() as { c: number }
     ).c;
     expect(processed).toBe(1);
+  });
+
+  it('supervisor re-throws programming errors (TypeError) instead of looping forever', async () => {
+    const boomClaim: RelayState['claim'] = () => {
+      throw new TypeError('relay bug: undefined.foo');
+    };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const state = makeState({ claim: boomClaim });
+
+    // The loop rejects with the TypeError rather than silently looping.
+    await expect(runContinuously(state)).rejects.toBeInstanceOf(TypeError);
+    expect(errSpy).toHaveBeenCalled();
+    errSpy.mockRestore();
   });
 
   it('stop() resolves even when the inflight iteration rejects at shutdown', async () => {

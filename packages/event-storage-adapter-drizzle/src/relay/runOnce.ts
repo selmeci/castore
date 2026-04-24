@@ -89,6 +89,7 @@ const processOne = async (
       registry: state.registry,
       ctx: state.ctx,
       hooks: state.hooks,
+      publishTimeoutMs: state.options.publishTimeoutMs,
     });
     if (outcome === 'ok') {
       result.processed += 1;

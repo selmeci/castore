@@ -25,14 +25,16 @@ export type { CreateOutboxRelayArgs, OutboxRelay } from './factory';
 
 export {
   DuplicateEventStoreIdError,
+  InvalidPublishTimeoutError,
   OutboxNotEnabledError,
+  OutboxPublishTimeoutError,
   OutboxRowNotFoundError,
   RegistryEntryMismatchError,
   RetryRowClaimedError,
   UnsupportedChannelTypeError,
 } from './errors';
 
-export type { RetryRowOptions } from './admin';
+export type { DeleteRowOptions, RetryRowOptions } from './admin';
 export type { BoundClaim, RelayState, RunOnceResult } from './runOnce';
 export type { RelayPublishContext, PublishOutcome } from './publish';
 

@@ -61,6 +61,22 @@ export interface RelayOptions {
   pollingMs?: number;
   /** Max rows claimed per `runOnce` batch. */
   batchSize?: number;
+  /**
+   * Hard wall-clock cap on a single per-row publish (lookup + aggregate
+   * reconstruction + channel.publishMessage + mark-processed). When
+   * exceeded, the publish is rejected with `OutboxPublishTimeoutError` and
+   * the row routes through the normal retry path.
+   *
+   * MUST be less than `claimTimeoutMs`; otherwise a slow publish escapes
+   * the fencing window and another worker TTL-reclaims while this worker
+   * is still in-flight, producing a silent double-publish (parent R14).
+   * The relay factory enforces this at construction.
+   *
+   * Default is `floor(claimTimeoutMs / 2)` — conservative enough that TTL
+   * reclaim has a full half-window of slack; small enough that a hung bus
+   * does not pin a worker until TTL.
+   */
+  publishTimeoutMs?: number;
 }
 
 export type OnDeadHook = (args: {

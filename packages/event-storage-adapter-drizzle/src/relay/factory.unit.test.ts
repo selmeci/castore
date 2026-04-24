@@ -17,6 +17,7 @@ import { claimSqlite } from '../sqlite/outbox/claim';
 import { outboxTable } from '../sqlite/schema';
 import {
   DuplicateEventStoreIdError,
+  InvalidPublishTimeoutError,
   OutboxNotEnabledError,
   RegistryEntryMismatchError,
   UnsupportedChannelTypeError,
@@ -187,6 +188,56 @@ describe('createOutboxRelay', () => {
         ],
       }),
     ).toThrow(UnsupportedChannelTypeError);
+  });
+
+  it('rejects publishTimeoutMs >= claimTimeoutMs (fencing invariant)', () => {
+    const bus = new NotificationMessageBus({
+      messageBusId: 'b',
+      sourceEventStores: [countersStore],
+    });
+    expect(() =>
+      createOutboxRelay({
+        dialect: 'sqlite',
+        adapter: makeOutboxAdapter(),
+        db,
+        outboxTable,
+        claim,
+        registry: [
+          {
+            eventStoreId: 'counters',
+            connectedEventStore: new ConnectedEventStore(countersStore, bus),
+            channel: bus,
+          },
+        ],
+        options: { claimTimeoutMs: 10_000, publishTimeoutMs: 20_000 },
+      }),
+    ).toThrow(InvalidPublishTimeoutError);
+  });
+
+  it('re-derives publishTimeoutMs default from a tuned claimTimeoutMs', () => {
+    const bus = new NotificationMessageBus({
+      messageBusId: 'b',
+      sourceEventStores: [countersStore],
+    });
+    // Just has to not throw — short claimTimeoutMs with the static 150s
+    // default would have tripped the invariant.
+    expect(() =>
+      createOutboxRelay({
+        dialect: 'sqlite',
+        adapter: makeOutboxAdapter(),
+        db,
+        outboxTable,
+        claim,
+        registry: [
+          {
+            eventStoreId: 'counters',
+            connectedEventStore: new ConnectedEventStore(countersStore, bus),
+            channel: bus,
+          },
+        ],
+        options: { claimTimeoutMs: 1_000 },
+      }),
+    ).not.toThrow();
   });
 
   it('constructs with a valid single-entry registry', () => {

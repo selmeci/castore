@@ -127,6 +127,7 @@ describe('runOnce', () => {
         claimTimeoutMs: 60_000,
         pollingMs: 250,
         batchSize: 10,
+        publishTimeoutMs: 30_000,
       },
       claim: args =>
         claimSqlite({

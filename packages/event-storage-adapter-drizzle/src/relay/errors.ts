@@ -33,6 +33,41 @@ export class RetryRowClaimedError extends Error {
 }
 
 /**
+ * Thrown by the relay's per-row publish path when a single publish exceeds
+ * `publishTimeoutMs`. Routes through the normal retry path (attempts++);
+ * a hung bus cannot pin a worker beyond this bound.
+ */
+export class OutboxPublishTimeoutError extends Error {
+  readonly name = 'OutboxPublishTimeoutError';
+  readonly rowId: string;
+  readonly timeoutMs: number;
+
+  constructor(rowId: string, timeoutMs: number) {
+    super(
+      `Outbox row ${rowId} publish exceeded ${timeoutMs}ms — aborting and routing to retry.`,
+    );
+    this.rowId = rowId;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/**
+ * Thrown by `createOutboxRelay` when `publishTimeoutMs >= claimTimeoutMs`.
+ * A publish that outlives the claim TTL cannot guarantee fencing: another
+ * worker will reclaim and re-publish while this one is still in-flight.
+ * The factory fails fast instead of allowing a silent double-publish mode.
+ */
+export class InvalidPublishTimeoutError extends Error {
+  readonly name = 'InvalidPublishTimeoutError';
+
+  constructor(publishTimeoutMs: number, claimTimeoutMs: number) {
+    super(
+      `publishTimeoutMs (${publishTimeoutMs}ms) must be less than claimTimeoutMs (${claimTimeoutMs}ms) to preserve the fencing-token guarantee.`,
+    );
+  }
+}
+
+/**
  * Thrown by `retryRow` / `deleteRow` when the target `rowId` is not in the
  * outbox table. Typed so callers can discriminate "row missing" from other
  * admin failures via `instanceof`.
