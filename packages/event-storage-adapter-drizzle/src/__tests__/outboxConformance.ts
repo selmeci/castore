@@ -252,6 +252,44 @@ export const makeOutboxConformanceSuite = <
         const exists = await ctx.uniqueConstraintExists();
         expect(exists).toBe(true);
       });
+
+      // Pins the parent Key Decision: timestamps come from the dialect's
+      // server-time function (`NOW()` / `NOW(3)` / `strftime`), not from
+      // worker wall-clock. sqlite's `strftime` form is already exercised in
+      // unit-layer tests; pg + mysql need to be checked end-to-end against
+      // a real driver because their server clock and the worker process
+      // clock can drift independently. Asserting the per-row created_at is
+      // within seconds of `dialectNow(...)` evaluated by the same DB proves
+      // that no JS-side timestamp slipped into the INSERT path.
+      it.skipIf(dialectName === 'sqlite')(
+        'dialectNow runtime: created_at stamped from server time, within 2s of NOW()',
+        async () => {
+          const aggregateId = randomUUID();
+          await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+          const rows = (await ctx.db
+            .select({
+              createdAt: ctx.outboxTable.createdAt,
+              now: dialectNow(dialectName),
+            })
+            .from(ctx.outboxTable)
+            .where(
+              eq(ctx.outboxTable.aggregateId as never, aggregateId),
+            )) as Array<{ createdAt: unknown; now: unknown }>;
+          expect(rows).toHaveLength(1);
+
+          const createdAtMs = new Date(rows[0]!.createdAt as string).getTime();
+          const nowMs = new Date(rows[0]!.now as string).getTime();
+          expect(Number.isFinite(createdAtMs)).toBe(true);
+          expect(Number.isFinite(nowMs)).toBe(true);
+          // `nowMs` is evaluated AFTER the insert, so the delta is
+          // non-negative under normal conditions; a 2s window absorbs
+          // testcontainer + driver latency without admitting a clock-source
+          // regression.
+          expect(nowMs - createdAtMs).toBeGreaterThanOrEqual(0);
+          expect(nowMs - createdAtMs).toBeLessThan(2_000);
+        },
+      );
     });
 
     describe('claim + FIFO (R12)', () => {
@@ -494,6 +532,15 @@ export const makeOutboxConformanceSuite = <
           1,
         );
         expect(rowA).toBeUndefined();
+
+        // R7 atomicity at both sides of the transaction: not just the outbox
+        // pointer but the underlying event row must also be absent for
+        // aggregateA. A surviving event row would be a partially-committed
+        // group — the bug pushEventGroup is supposed to make impossible.
+        const { events: eventsA } = await ctx.adapter.getEvents(aggregateA, {
+          eventStoreId: ctx.connectedEventStore.eventStoreId,
+        });
+        expect(eventsA).toHaveLength(0);
       });
     });
 
@@ -687,6 +734,50 @@ export const makeOutboxConformanceSuite = <
         );
         const result = await relay.runOnce();
         expect(result.processed).toBeGreaterThan(0);
+      });
+
+      it('R19 hook-swallow: throwing onDead and onFail do not fail runOnce or block dead transition', async () => {
+        // Pins the try/catch contract at relay/hooks.ts:9-21,26-43: a hook
+        // that throws never escapes — runOnce resolves cleanly, the row
+        // still transitions to dead_at, and the result reports the dead
+        // count. Without swallow semantics, an operator-supplied bug in
+        // onDead would propagate up and abort the whole batch.
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const { registry } = buildRegistry();
+        vi.spyOn(ctx.channel, 'publishMessage').mockRejectedValue(
+          new Error('bus down'),
+        );
+        const onDead = vi.fn(() => {
+          throw new Error('onDead hook misbehaving');
+        });
+        const onFail = vi.fn(() => {
+          throw new Error('onFail hook misbehaving');
+        });
+        const maxAttempts = 2;
+        const relay = makeRelay(registry, {
+          hooks: { onDead, onFail },
+          options: { maxAttempts, baseMs: 1, ceilingMs: 10 },
+        });
+
+        // First failure fires onFail (which throws). Second failure
+        // exhausts maxAttempts and fires onDead (which also throws).
+        // Neither rejection escapes — both runOnce calls resolve.
+        await expect(relay.runOnce()).resolves.toBeDefined();
+        const second = await relay.runOnce();
+        expect(second.dead).toBeGreaterThanOrEqual(1);
+
+        // The dead transition completed despite both hooks throwing.
+        const row = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(row?.dead_at).not.toBeNull();
+        expect(onFail).toHaveBeenCalledTimes(maxAttempts - 1);
+        expect(onDead).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -884,6 +975,30 @@ export const makeOutboxConformanceSuite = <
         // first dead. The retry path resets attempts to 0, so the second
         // dead transition still takes maxAttempts failures (here: 1).
         await relay.retryRow(firstDead!.id);
+
+        // Pin the resetSet contract from relay/admin.ts:83-90: retryRow
+        // clears attempts, last_error, last_attempt_at, dead_at, and the
+        // claim token. Without this assertion the "re-dead after maxAttempts
+        // failures" claim above is trivially true regardless of whether
+        // attempts was reset, and a regression that left attempts at the
+        // pre-retry value would silently pass.
+        const afterRetry = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(afterRetry).toEqual(
+          expect.objectContaining({
+            attempts: 0,
+            dead_at: null,
+            last_error: null,
+            last_attempt_at: null,
+            claim_token: null,
+            claimed_at: null,
+          }),
+        );
+
         await relay.runOnce();
 
         const secondDead = await selectRowByKey(
