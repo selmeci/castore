@@ -178,6 +178,59 @@ export const makeOutboxConformanceSuite = <
 
   describe(`drizzle ${dialectName} outbox relay — conformance`, () => {
     let ctx: OutboxConformanceSetupResult<A, T>;
+    // Per-test mock-timer registry. Slow publishMessage mocks register their
+    // setTimeout handles here so afterEach can guarantee no leaked timers
+    // outlive the test. Without this, a test that fires withTimeout (which
+    // wins the Promise.race at publishTimeoutMs) leaves the mock's
+    // setTimeout(resolve, 600) running long after the test completes —
+    // a real-timer leak that vitest's `vi.getTimerCount()` does not track
+    // because it is real, not faked.
+    const pendingMockTimers = new Set<ReturnType<typeof setTimeout>>();
+    // Per-test unhandledRejection collector. The publishTimeoutMs scenarios
+    // race a Promise.race timeout against a slow publish mock; if the mock's
+    // promise rejects later (e.g. an AbortSignal-aware mock that rejects on
+    // abort) we want the rejection to be observed, not silently swallowed
+    // by Node's unhandledRejection handler. A loud failure here surfaces
+    // "the test design left a promise dangling" instead of letting a real
+    // bug masquerade as a clean run.
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandledRejections.push(reason);
+    };
+
+    /**
+     * AbortSignal-honoring slow-publish mock implementation. The mock
+     * resolves after `ms` OR rejects when the test scope's abort fires —
+     * whichever comes first. Returns a function suitable for
+     * `vi.spyOn(...).mockImplementation(...)`.
+     *
+     * The relay's `withTimeout` does not currently thread its AbortSignal
+     * into `channel.publishMessage`, so the mock cannot observe the relay-
+     * side abort. Instead, the test scope provides its own controller
+     * (aborted in afterEach) so the mock's pending promise unwinds at
+     * test boundary instead of leaking until `ms` elapses.
+     */
+    const slowPublishHonoringAbort =
+      (ms: number, abortSignal: AbortSignal): (() => Promise<void>) =>
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const handle = setTimeout(() => {
+            pendingMockTimers.delete(handle);
+            resolve();
+          }, ms);
+          pendingMockTimers.add(handle);
+          const onAbort = (): void => {
+            clearTimeout(handle);
+            pendingMockTimers.delete(handle);
+            reject(new Error('mock cancelled at test cleanup'));
+          };
+          if (abortSignal.aborted) {
+            onAbort();
+
+            return;
+          }
+          abortSignal.addEventListener('abort', onAbort, { once: true });
+        });
 
     const buildRegistry = () => {
       const publishSpy = vi
@@ -209,16 +262,44 @@ export const makeOutboxConformanceSuite = <
         ...extra,
       });
 
+    // Each test gets a fresh AbortController; tests that need an
+    // abort-aware slow-publish mock pass `mockAbortController.signal`
+    // into `slowPublishHonoringAbort`. afterEach aborts it to cancel
+    // any still-pending mock promises.
+    let mockAbortController: AbortController;
+
     beforeAll(async () => {
       ctx = await setup();
+      process.on('unhandledRejection', onUnhandledRejection);
     }, 120_000);
 
     beforeEach(async () => {
       await ctx.reset();
       vi.restoreAllMocks();
+      mockAbortController = new AbortController();
+      unhandledRejections.length = 0;
+    });
+
+    afterEach(() => {
+      mockAbortController.abort();
+      for (const handle of pendingMockTimers) {
+        clearTimeout(handle);
+      }
+      pendingMockTimers.clear();
+      // No real timers left dangling AFTER explicit cleanup. Note:
+      // vi.getTimerCount() reports 0 for real timers (vitest only tracks
+      // faked ones); this assertion is a future-proofing marker — if a
+      // future test introduces fake timers, the unfakedTimerCount must
+      // still be zero at end-of-test.
+      expect(vi.getTimerCount()).toBe(0);
+      // unhandledRejections from the current test must not bleed into
+      // the next one. Loud failure: a leaked rejection is a contract
+      // violation in the test design.
+      expect(unhandledRejections).toStrictEqual([]);
     });
 
     afterAll(async () => {
+      process.off('unhandledRejection', onUnhandledRejection);
       vi.restoreAllMocks();
       await teardown();
     });
@@ -874,6 +955,93 @@ export const makeOutboxConformanceSuite = <
           OutboxRowNotFoundError,
         );
       });
+
+      it('retryRow + concurrent claim: at most one wins; the other surfaces a typed error', async () => {
+        // Pins the TOCTOU guarantee at relay/admin.ts:54-57 — the default-safe
+        // path is a single conditional UPDATE that the DB serialises against
+        // a concurrent claim. Either the claim lands first (retryRow's WHERE
+        // claim_token IS NULL fails → typed error), or retryRow lands first
+        // (claim returns the freshly-cleared row OR finds 0 eligible rows
+        // because retryRow's resetSet didn't write a claim). What MUST NOT
+        // happen: both succeed and the row ends in a half-applied state.
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const seedRow = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        const rowId = seedRow!.id;
+
+        const { registry } = buildRegistry();
+        const relay = makeRelay(registry);
+
+        const [claimResult, retryResult] = await Promise.allSettled([
+          ctx.claim({
+            workerClaimToken: 'concurrent-worker',
+            aggregateNames: [ctx.connectedEventStore.eventStoreId],
+            batchSize: 10,
+            claimTimeoutMs: 60_000,
+          }),
+          relay.retryRow(rowId),
+        ]);
+
+        // One of three legal observable outcomes — never a half-applied
+        // double-success on the same row:
+        //   A. Claim wins: claim returns the row claimed; retryRow rejects
+        //      with RetryRowClaimedError (or OutboxRowNotFoundError if the
+        //      row got deleted concurrently — out of scope here).
+        //   B. retryRow wins, claim then re-acquires the freshly-cleared
+        //      row: both fulfilled, claim returns the row.
+        //   C. retryRow wins, claim runs first but found 0 eligible rows
+        //      (because at SELECT time the row was already in pristine state
+        //      and the connection serialisation chose to schedule retryRow
+        //      first): both fulfilled, claim returns [].
+        const claimRows =
+          claimResult.status === 'fulfilled' ? claimResult.value : null;
+        const retrySettled = retryResult.status;
+
+        if (retrySettled === 'rejected') {
+          // Outcome A: claim raced ahead. Error must be one of the typed
+          // surfaces, not a generic Error.
+          const reason = (retryResult as PromiseRejectedResult).reason as
+            | RetryRowClaimedError
+            | OutboxRowNotFoundError
+            | Error;
+          const isTyped =
+            reason instanceof RetryRowClaimedError ||
+            reason instanceof OutboxRowNotFoundError;
+          expect(isTyped).toBe(true);
+          expect(claimResult.status).toBe('fulfilled');
+          expect(claimRows).toHaveLength(1);
+          expect(claimRows![0]!.id).toBe(rowId);
+        } else {
+          // Outcomes B / C: retryRow won; claim either picked the row up
+          // afterward (length 1) or saw a clean row first (length 0).
+          expect(claimResult.status).toBe('fulfilled');
+          expect([0, 1]).toContain(claimRows!.length);
+          if (claimRows!.length === 1) {
+            expect(claimRows![0]!.id).toBe(rowId);
+            expect(claimRows![0]!.claim_token).toBe('concurrent-worker');
+          }
+        }
+
+        // Whichever path won, the row's final shape is consistent — never
+        // a "claim_token populated AND attempts cleared by retryRow at the
+        // same time" tear.
+        const finalRow = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(finalRow).toBeDefined();
+        // attempts is 0 in every legal outcome (either retryRow reset it,
+        // or the row was never failed and it's still 0 from insert).
+        expect(finalRow!.attempts).toBe(0);
+      });
     });
 
     describe('publishTimeoutMs (R14, R15)', () => {
@@ -882,13 +1050,16 @@ export const makeOutboxConformanceSuite = <
         await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
 
         const { registry } = buildRegistry();
-        // Slow publish that ignores the AbortSignal. withTimeout's timer is
-        // the load-bearing primitive — this proves that a hung bus cannot
-        // pin a worker beyond publishTimeoutMs even when the bus ignores
-        // AbortController.abort().
-        vi.spyOn(ctx.channel, 'publishMessage').mockImplementation(async () => {
-          await new Promise(resolve => setTimeout(resolve, 600));
-        });
+        // Slow publish that does not race the relay-side AbortSignal (today's
+        // publish.ts does not thread it into channel.publishMessage). The
+        // mock's setTimeout is registered with the test scope's abort
+        // controller so afterEach can guarantee no leaked timer outlives
+        // the test — withTimeout's timer is the load-bearing primitive
+        // proving a hung bus cannot pin a worker beyond publishTimeoutMs
+        // regardless of whether the bus implementation honors abort.
+        vi.spyOn(ctx.channel, 'publishMessage').mockImplementation(
+          slowPublishHonoringAbort(600, mockAbortController.signal),
+        );
         const onFail = vi.fn();
 
         const relay = makeRelay(registry, {
@@ -923,6 +1094,67 @@ export const makeOutboxConformanceSuite = <
         expect(row?.claim_token).toBeNull();
         expect(row?.processed_at).toBeNull();
         expect(row?.dead_at).toBeNull();
+      });
+
+      it('tight no-TTL-race: publishTimeoutMs ≈ claimTimeoutMs, second worker between timeout-fire and TTL never TTL-reclaims', async () => {
+        // Plan §Risks row 5: prove the no-TTL-race guarantee at-runtime, not
+        // just at factory-construction time. With publishTimeoutMs sitting
+        // 10ms below claimTimeoutMs, the timeout MUST fire (and hence the
+        // retry path MUST run) before the original claim_token would have
+        // been TTL-eligible for reclaim by another worker. A regression that
+        // bypassed the factory invariant (e.g. directly mutating
+        // state.options.publishTimeoutMs) would fail here even though the
+        // constructor guard still passed.
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        const claimTimeoutMs = 200;
+        const publishTimeoutMs = 190; // claimTimeoutMs - 10
+
+        // publish takes ~claimTimeoutMs - 5 (195ms). Comfortably past
+        // publishTimeoutMs but short of claimTimeoutMs.
+        const publishDelayMs = 195;
+        vi.spyOn(ctx.channel, 'publishMessage').mockImplementation(
+          slowPublishHonoringAbort(publishDelayMs, mockAbortController.signal),
+        );
+
+        const { registry } = buildRegistry();
+        const relay = makeRelay(registry, {
+          options: {
+            claimTimeoutMs,
+            publishTimeoutMs,
+            maxAttempts: 5,
+            baseMs: 1,
+            ceilingMs: 10,
+          },
+        });
+
+        // Run the relay; the publish times out at ~190ms, retry runs.
+        const result = await relay.runOnce();
+        expect(result.failed).toBe(1);
+
+        // After runOnce returns, claim_token has been cleared by the retry
+        // path (well within claimTimeoutMs). A second worker that attempts
+        // claim() now between timeout-fire and TTL must NOT see a stuck
+        // row that it would have TTL-reclaimed; it sees a freshly-eligible
+        // row (claim_token IS NULL) instead.
+        const competing = await ctx.claim({
+          workerClaimToken: 'competing-worker',
+          aggregateNames: [ctx.connectedEventStore.eventStoreId],
+          batchSize: 10,
+          claimTimeoutMs,
+        });
+        expect(competing).toHaveLength(1);
+        // The fresh claim wrote its own token — proves the row was claimed
+        // via the eligibility-by-claim_token-IS-NULL path, NOT via TTL
+        // reclaim of a still-populated original token.
+        expect(competing[0]!.claim_token).toBe('competing-worker');
+
+        // Crucially, the row carried attempts = 1 from the timeout's retry
+        // path (NOT attempts = 0 + a still-original-token TTL reclaim).
+        // This pins that handleFailure ran inside the publishTimeoutMs/
+        // claimTimeoutMs window, not after.
+        expect(competing[0]!.attempts).toBe(1);
       });
     });
 
@@ -1066,6 +1298,53 @@ export const makeOutboxConformanceSuite = <
         });
 
         await expect(relay.runContinuously()).rejects.toBeInstanceOf(TypeError);
+      });
+
+      it('graceful stop() is bounded by pollingMs + publishTimeoutMs (wakeController abort)', async () => {
+        // Pins relay/runOnce.ts:42-51 + runContinuously.ts sleep/stop wiring:
+        // calling stop() during an in-flight publish must unwind within
+        // pollingMs + publishTimeoutMs (plus tolerance), NOT pollingMs +
+        // however-long-the-bus-takes. Without the wakeController abort and
+        // the withTimeout wrapper around publishMessage, a hung bus could
+        // pin a worker for the full claimTimeoutMs (5min default).
+        const aggregateId = randomUUID();
+        await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
+
+        // publishMessage hangs for 200ms — well past publishTimeoutMs (100).
+        // The relay's withTimeout fires at ~100ms and rejects with
+        // OutboxPublishTimeoutError; runContinuously then routes through
+        // retry, sleeps pollingMs, and observes state.stopping = true on
+        // the next iteration (or its sleep wakes early via wakeController).
+        vi.spyOn(ctx.channel, 'publishMessage').mockImplementation(
+          slowPublishHonoringAbort(200, mockAbortController.signal),
+        );
+
+        const { registry } = buildRegistry();
+        const relay = makeRelay(registry, {
+          options: {
+            pollingMs: 50,
+            publishTimeoutMs: 100,
+            claimTimeoutMs: 60_000,
+            maxAttempts: 5,
+            baseMs: 1,
+            ceilingMs: 10,
+          },
+        });
+
+        const startedAt = Date.now();
+        const loop = relay.runContinuously();
+        // Give the loop one tick to claim + start the slow publish.
+        await new Promise(resolve => setTimeout(resolve, 25));
+
+        await relay.stop();
+        await loop;
+        const elapsed = Date.now() - startedAt;
+
+        // Hard upper bound: pollingMs (50) + publishTimeoutMs (100) +
+        // generous tolerance for testcontainer latency on CI. A regression
+        // that strips the wakeController abort or the withTimeout wrapper
+        // would push this comfortably past 1s.
+        expect(elapsed).toBeLessThan(1_000);
       });
     });
 
