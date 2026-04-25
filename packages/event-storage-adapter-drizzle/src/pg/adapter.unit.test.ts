@@ -164,14 +164,12 @@ const pgOutboxTeardown = async (): Promise<void> => {
 
 makeOutboxConformanceSuite({
   dialectName: 'pg',
-  adapterClass: DrizzlePgEventStorageAdapter,
   setup: pgOutboxSetup,
   teardown: pgOutboxTeardown,
 });
 
 makeOutboxFaultInjectionSuite({
   dialectName: 'pg',
-  adapterClass: DrizzlePgEventStorageAdapter,
   setup: pgOutboxSetup,
   teardown: pgOutboxTeardown,
 });

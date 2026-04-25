@@ -157,14 +157,12 @@ const mysqlOutboxTeardown = async (): Promise<void> => {
 
 makeOutboxConformanceSuite({
   dialectName: 'mysql',
-  adapterClass: DrizzleMysqlEventStorageAdapter,
   setup: mysqlOutboxSetup,
   teardown: mysqlOutboxTeardown,
 });
 
 makeOutboxFaultInjectionSuite({
   dialectName: 'mysql',
-  adapterClass: DrizzleMysqlEventStorageAdapter,
   setup: mysqlOutboxSetup,
   teardown: mysqlOutboxTeardown,
 });

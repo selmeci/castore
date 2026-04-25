@@ -209,14 +209,12 @@ const sqliteOutboxTeardown = async (): Promise<void> => {
 
 makeOutboxConformanceSuite({
   dialectName: 'sqlite',
-  adapterClass: DrizzleSqliteEventStorageAdapter,
   setup: sqliteOutboxSetup,
   teardown: sqliteOutboxTeardown,
 });
 
 makeOutboxFaultInjectionSuite({
   dialectName: 'sqlite',
-  adapterClass: DrizzleSqliteEventStorageAdapter,
   setup: sqliteOutboxSetup,
   teardown: sqliteOutboxTeardown,
 });

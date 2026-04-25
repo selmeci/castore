@@ -14,17 +14,6 @@ import type {
   OutboxConformanceSetupResult,
 } from './outboxConformance';
 
-/**
- * The fault-injection suite uses the same setup contract as the conformance
- * suite — the per-dialect test file passes the same object shape to both
- * factories, with its shared `reset()` wiping both event and outbox tables
- * between scenarios so each scenario starts from a clean slate.
- */
-export type OutboxFaultInjectionSetup<
-  A extends EventStorageAdapter,
-  T extends OutboxColumnTable,
-> = OutboxConformanceSetup<A, T>;
-
 const pushEvent = async (
   ces: ConnectedEventStore,
   aggregateId: string,
@@ -69,7 +58,7 @@ export const makeOutboxFaultInjectionSuite = <
   A extends EventStorageAdapter,
   T extends OutboxColumnTable,
 >(
-  config: OutboxFaultInjectionSetup<A, T>,
+  config: OutboxConformanceSetup<A, T>,
 ): void => {
   const { dialectName, setup, teardown } = config;
 

@@ -71,7 +71,6 @@ export interface OutboxConformanceSetup<
   T extends OutboxColumnTable,
 > {
   dialectName: OutboxDialect;
-  adapterClass: abstract new (...args: any[]) => A;
   setup: () => Promise<OutboxConformanceSetupResult<A, T>>;
   teardown: () => Promise<void>;
 }
