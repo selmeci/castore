@@ -16,8 +16,18 @@ import {
 import { Pool } from 'pg';
 import postgres from 'postgres';
 
+import { ConnectedEventStore } from '@castore/core';
+
 import { makeAdapterConformanceSuite } from '../__tests__/conformance';
+import {
+  makeCounterBus,
+  makeCounterEventStore,
+  makeOutboxConformanceSuite,
+} from '../__tests__/outboxConformance';
+import { makeOutboxFaultInjectionSuite } from '../__tests__/outboxFaultInjection';
 import { DrizzleEventAlreadyExistsError } from '../common/error';
+import { claimPg } from '../relay';
+import type { BoundClaim } from '../relay';
 import { DrizzlePgEventStorageAdapter } from './adapter';
 import {
   eventColumns,
@@ -76,6 +86,92 @@ makeAdapterConformanceSuite({
   teardown: async () => {
     /* container lifecycle is owned by the file, not the factory */
   },
+});
+
+// Outbox conformance — exercises the full relay surface (claim, fencing, TTL,
+// admin, registry validation, lifecycle) against the real pg driver. Shares
+// the file-level testcontainer with the adapter conformance suite above.
+
+const createPgOutboxSql = sql`
+  CREATE TABLE IF NOT EXISTS castore_outbox (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_name  TEXT NOT NULL,
+    aggregate_id    TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ(3) NOT NULL DEFAULT NOW(),
+    claim_token     TEXT,
+    claimed_at      TIMESTAMPTZ(3),
+    processed_at    TIMESTAMPTZ(3),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    last_attempt_at TIMESTAMPTZ(3),
+    dead_at         TIMESTAMPTZ(3),
+    CONSTRAINT outbox_aggregate_version_uq UNIQUE (aggregate_name, aggregate_id, version)
+  );
+`;
+const dropPgOutboxSql = sql`DROP TABLE IF EXISTS castore_outbox;`;
+
+const pgOutboxSetup = async () => {
+  const eventStore = makeCounterEventStore('counters');
+  const bus = makeCounterBus('counters');
+  const outboxAdapter = new DrizzlePgEventStorageAdapter({
+    db,
+    eventTable,
+    outbox: outboxTable,
+  });
+  const connectedEventStore = new ConnectedEventStore(eventStore, bus);
+  connectedEventStore.eventStorageAdapter = outboxAdapter;
+
+  return {
+    adapter: outboxAdapter,
+    db,
+    outboxTable,
+    connectedEventStore,
+    channel: bus,
+    claim: (args => claimPg({ db, outboxTable, ...args })) as BoundClaim,
+    reset: async () => {
+      await db.execute(dropTableSql);
+      await db.execute(createTableSql);
+      await db.execute(dropPgOutboxSql);
+      await db.execute(createPgOutboxSql);
+    },
+    backdateClaimedAt: async (rowId: string, msAgo: number) => {
+      await db.execute(
+        sql`UPDATE castore_outbox SET claimed_at = NOW() - ${sql.raw(`INTERVAL '${Math.floor(msAgo)} milliseconds'`)} WHERE id = ${rowId}::uuid`,
+      );
+    },
+    uniqueConstraintExists: async () => {
+      const raw: unknown = await db.execute(
+        sql`SELECT conname FROM pg_constraint WHERE conname = 'outbox_aggregate_version_uq'`,
+      );
+      const rows = Array.isArray(raw)
+        ? raw
+        : ((raw as { rows?: unknown[] }).rows ?? []);
+
+      return rows.length > 0;
+    },
+    deleteEventRow: async (aggregateId: string) => {
+      await db.execute(
+        sql`DELETE FROM event WHERE aggregate_id = ${aggregateId}`,
+      );
+    },
+  };
+};
+
+const pgOutboxTeardown = async (): Promise<void> => {
+  /* container lifecycle is owned by the file, not the factory */
+};
+
+makeOutboxConformanceSuite({
+  dialectName: 'pg',
+  setup: pgOutboxSetup,
+  teardown: pgOutboxTeardown,
+});
+
+makeOutboxFaultInjectionSuite({
+  dialectName: 'pg',
+  setup: pgOutboxSetup,
+  teardown: pgOutboxTeardown,
 });
 
 // Dialect-specific scenarios live below — they are NOT part of the shared

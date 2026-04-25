@@ -5,7 +5,17 @@ import { drizzle, type MySql2Database } from 'drizzle-orm/mysql2';
 import { mysqlTable, varchar } from 'drizzle-orm/mysql-core';
 import mysql from 'mysql2/promise';
 
+import { ConnectedEventStore } from '@castore/core';
+
 import { makeAdapterConformanceSuite } from '../__tests__/conformance';
+import {
+  makeCounterBus,
+  makeCounterEventStore,
+  makeOutboxConformanceSuite,
+} from '../__tests__/outboxConformance';
+import { makeOutboxFaultInjectionSuite } from '../__tests__/outboxFaultInjection';
+import { claimMysql } from '../relay';
+import type { BoundClaim } from '../relay';
 import { DrizzleMysqlEventStorageAdapter } from './adapter';
 import {
   eventColumns,
@@ -73,6 +83,88 @@ makeAdapterConformanceSuite({
   teardown: async () => {
     /* container lifecycle is owned by the file, not the factory */
   },
+});
+
+// Outbox conformance — exercises the full relay surface (claim, fencing, TTL,
+// admin, registry validation, lifecycle) against the real mysql driver.
+// Shares the file-level testcontainer with the adapter conformance suite.
+
+const createMysqlOutboxSql = `
+  CREATE TABLE IF NOT EXISTS castore_outbox (
+    id              VARCHAR(36) PRIMARY KEY DEFAULT (UUID()),
+    aggregate_name  VARCHAR(255) NOT NULL,
+    aggregate_id    VARCHAR(64) NOT NULL,
+    version         INT NOT NULL,
+    created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    claim_token     VARCHAR(36),
+    claimed_at      DATETIME(3),
+    processed_at    DATETIME(3),
+    attempts        INT NOT NULL DEFAULT 0,
+    last_error      VARCHAR(2048),
+    last_attempt_at DATETIME(3),
+    dead_at         DATETIME(3),
+    CONSTRAINT outbox_aggregate_version_uq UNIQUE (aggregate_name, aggregate_id, version)
+  )
+`;
+
+const mysqlOutboxSetup = async () => {
+  const eventStore = makeCounterEventStore('counters');
+  const bus = makeCounterBus('counters');
+  const outboxAdapter = new DrizzleMysqlEventStorageAdapter({
+    db,
+    eventTable,
+    outbox: outboxTable,
+  });
+  const connectedEventStore = new ConnectedEventStore(eventStore, bus);
+  connectedEventStore.eventStorageAdapter = outboxAdapter;
+
+  return {
+    adapter: outboxAdapter,
+    db,
+    outboxTable,
+    connectedEventStore,
+    channel: bus,
+    claim: (args => claimMysql({ db, outboxTable, ...args })) as BoundClaim,
+    reset: async () => {
+      await resetEventTable();
+      await connection.query(`DROP TABLE IF EXISTS castore_outbox`);
+      await connection.query(createMysqlOutboxSql);
+    },
+    backdateClaimedAt: async (rowId: string, msAgo: number) => {
+      await connection.query(
+        `UPDATE castore_outbox SET claimed_at = DATE_SUB(NOW(3), INTERVAL ${Math.floor(msAgo)} / 1000 SECOND) WHERE id = ?`,
+        [rowId],
+      );
+    },
+    uniqueConstraintExists: async () => {
+      const [rows] = (await connection.query(
+        `SHOW INDEX FROM castore_outbox WHERE Key_name = 'outbox_aggregate_version_uq'`,
+      )) as [unknown[], unknown];
+
+      return rows.length > 0;
+    },
+    deleteEventRow: async (aggregateId: string) => {
+      await connection.query(`DELETE FROM event WHERE aggregate_id = ?`, [
+        aggregateId,
+      ]);
+    },
+  };
+};
+
+const mysqlOutboxTeardown = async (): Promise<void> => {
+  /* container lifecycle is owned by the file, not the factory */
+};
+
+makeOutboxConformanceSuite({
+  dialectName: 'mysql',
+  setup: mysqlOutboxSetup,
+  teardown: mysqlOutboxTeardown,
+});
+
+makeOutboxFaultInjectionSuite({
+  dialectName: 'mysql',
+  setup: mysqlOutboxSetup,
+  teardown: mysqlOutboxTeardown,
 });
 
 // Dialect-local scenarios — JSON round-trip parity and extended-table.
