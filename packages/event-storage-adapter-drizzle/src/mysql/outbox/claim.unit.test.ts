@@ -269,6 +269,58 @@ describe('claimMysql', () => {
     });
     expect(rows).toHaveLength(0);
   });
+
+  it('two concurrent claims against the same aggregate return disjoint rowsets', async () => {
+    // Symmetric to the pg U4 unit test "two concurrent claims against the
+    // same aggregate are serialized". Pins the mysql claim primitive's
+    // FOR UPDATE SKIP LOCKED + earliest-per-aggregate subquery against the
+    // real driver. Uses a pool so the two transactions run on different
+    // physical connections — a single mysql.createConnection would
+    // serialize the queries and the test would pass for the wrong reason.
+    const pool = mysql.createPool({
+      host: mysqlContainer.getHost(),
+      port: mysqlContainer.getPort(),
+      user: mysqlContainer.getUsername(),
+      password: mysqlContainer.getUserPassword(),
+      database: mysqlContainer.getDatabase(),
+      connectionLimit: 4,
+    });
+    const poolDb = drizzle(pool);
+    try {
+      await seed({ aggregateName: 'store', aggregateId: 'a', version: 1 });
+      await seed({ aggregateName: 'store', aggregateId: 'a', version: 2 });
+      await seed({ aggregateName: 'store', aggregateId: 'a', version: 3 });
+
+      const [first, second] = await Promise.all([
+        claimMysql({
+          db: poolDb,
+          outboxTable,
+          batchSize: 10,
+          claimTimeoutMs: 60_000,
+          workerClaimToken: 'worker-a',
+          aggregateNames: ['store'],
+        }),
+        claimMysql({
+          db: poolDb,
+          outboxTable,
+          batchSize: 10,
+          claimTimeoutMs: 60_000,
+          workerClaimToken: 'worker-b',
+          aggregateNames: ['store'],
+        }),
+      ]);
+
+      // Earliest-per-aggregate + FOR UPDATE SKIP LOCKED guarantees the
+      // winner gets v1 only (FIFO block on v2/v3) and the loser gets
+      // nothing — never disjoint partial overlap, never both winning.
+      const total = first.length + second.length;
+      expect(total).toBe(1);
+      const winner = first.length === 1 ? first : second;
+      expect(winner[0]?.version).toBe(1);
+    } finally {
+      await pool.end();
+    }
+  });
 });
 
 // Reference `sql` so the tooling does not drop the unused import — the
