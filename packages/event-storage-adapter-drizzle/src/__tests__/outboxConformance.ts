@@ -286,15 +286,12 @@ export const makeOutboxConformanceSuite = <
         clearTimeout(handle);
       }
       pendingMockTimers.clear();
-      // No real timers left dangling AFTER explicit cleanup. Note:
-      // vi.getTimerCount() reports 0 for real timers (vitest only tracks
-      // faked ones); this assertion is a future-proofing marker — if a
-      // future test introduces fake timers, the unfakedTimerCount must
-      // still be zero at end-of-test.
-      expect(vi.getTimerCount()).toBe(0);
       // unhandledRejections from the current test must not bleed into
       // the next one. Loud failure: a leaked rejection is a contract
-      // violation in the test design.
+      // violation in the test design. (vi.getTimerCount() can not be
+      // asserted here — vitest 3 throws when fake timers aren't active,
+      // and the suite uses real timers throughout. The explicit
+      // pendingMockTimers cleanup above is the load-bearing guard.)
       expect(unhandledRejections).toStrictEqual([]);
     });
 
@@ -844,10 +841,13 @@ export const makeOutboxConformanceSuite = <
 
         // First failure fires onFail (which throws). Second failure
         // exhausts maxAttempts and fires onDead (which also throws).
-        // Neither rejection escapes — both runOnce calls resolve.
+        // Neither rejection escapes — both runOnce calls resolve. (Note:
+        // result.dead counts only the publish-returned 'dead' outcome —
+        // nil-row, missing-registry — NOT maxAttempts-exhaustion via
+        // handleFailure. The DB state check below is the authoritative
+        // dead-transition assertion for this scenario.)
         await expect(relay.runOnce()).resolves.toBeDefined();
-        const second = await relay.runOnce();
-        expect(second.dead).toBeGreaterThanOrEqual(1);
+        await expect(relay.runOnce()).resolves.toBeDefined();
 
         // The dead transition completed despite both hooks throwing.
         const row = await selectRowByKey(
@@ -1114,11 +1114,17 @@ export const makeOutboxConformanceSuite = <
         // publish takes ~claimTimeoutMs - 5 (195ms). Comfortably past
         // publishTimeoutMs but short of claimTimeoutMs.
         const publishDelayMs = 195;
+
+        // Order matters: buildRegistry() installs its own publishMessage spy
+        // (mockResolvedValue), so the slow mock MUST be installed AFTER it
+        // to take effect. Reversing the order silently turns this into a
+        // happy-path test and the timeout assertion below would fail with
+        // result.failed === 0.
+        const { registry } = buildRegistry();
         vi.spyOn(ctx.channel, 'publishMessage').mockImplementation(
           slowPublishHonoringAbort(publishDelayMs, mockAbortController.signal),
         );
 
-        const { registry } = buildRegistry();
         const relay = makeRelay(registry, {
           options: {
             claimTimeoutMs,
