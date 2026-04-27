@@ -839,20 +839,17 @@ export const makeOutboxConformanceSuite = <
         );
         expect(v1Retried?.dead_at).toBeNull();
 
-        // Now v1 AND v2 are eligible. Drain the relay until both are
-        // processed. A single runOnce isn't sufficient evidence that v2
-        // unblocked — FIFO claim could legitimately return only v1 first
-        // and `result.processed > 0` would still be satisfied without v2
-        // ever becoming claimable. Instead, drive the relay forward and
-        // assert end-state: both v1 AND v2 carry processed_at via the
-        // claim/publish path (not the markRowProcessed shortcut), and v2
-        // was observably claimable post-retryRow.
+        // A single runOnce + `result.processed > 0` is NOT sufficient
+        // evidence that retryRow unblocked v2: FIFO claim can legitimately
+        // return only v1 first, satisfying that assertion without v2 ever
+        // becoming claimable. The two-step probe below is the observable
+        // DB-predicate proof — drain v1 through the real claim/publish
+        // path, then assert v2 is independently claimable.
         vi.restoreAllMocks();
         vi.spyOn(ctx.channel, 'publishMessage').mockResolvedValue(
           undefined as never,
         );
 
-        // First runOnce processes v1 (FIFO head).
         const firstResult = await relay.runOnce();
         expect(firstResult.processed).toBeGreaterThan(0);
         const v1Processed = await selectRowByKey(
@@ -864,8 +861,11 @@ export const makeOutboxConformanceSuite = <
         expect(v1Processed?.processed_at).not.toBeNull();
         expect(v1Processed?.dead_at).toBeNull();
 
-        // With v1 cleared, v2 must now be claimable — the direct
-        // observable that retryRow's unblock landed at the SQL predicate.
+        // With v1 cleared, v2 must now be claimable — the FIFO predicate
+        // is what retryRow's unblock has to land at, and a fresh claim
+        // with a new worker token is the direct observable that it did.
+        // Asserting `claim_token === 'unblocked'` pins "this caller
+        // claimed it now" rather than "v2 was claimed at any point".
         const v2Claimable = await ctx.claim({
           workerClaimToken: 'unblocked',
           aggregateNames: [ctx.connectedEventStore.eventStoreId],
@@ -874,6 +874,7 @@ export const makeOutboxConformanceSuite = <
         });
         const v2Row = v2Claimable.find(r => r.version === 2);
         expect(v2Row).toBeDefined();
+        expect(v2Row?.claim_token).toBe('unblocked');
       });
 
       it('R19 hook-swallow: throwing onDead and onFail do not fail runOnce or block dead transition', async () => {
@@ -1394,7 +1395,17 @@ export const makeOutboxConformanceSuite = <
           slowPublishHonoringAbort(200, mockAbortController.signal),
         );
 
+        // Capture the failure surface so we can pin which path actually
+        // fired. The 1s elapsed bound below is loose — it only catches
+        // the catastrophic "stop() awaits claimTimeoutMs" failure mode.
+        // A regression that strips `withTimeout` lets the bus hang for
+        // its full 200ms naturally and would still complete under 1s
+        // (~250ms total) — silently green. Asserting that `onFail`
+        // observed an `OutboxPublishTimeoutError` is what proves the
+        // `withTimeout` wrapper around `publishMessage` actually ran.
+        const onFail = vi.fn();
         const relay = makeRelay(registry, {
+          hooks: { onFail },
           options: {
             pollingMs: 50,
             publishTimeoutMs: 100,
@@ -1415,10 +1426,22 @@ export const makeOutboxConformanceSuite = <
         const elapsed = Date.now() - startedAt;
 
         // Hard upper bound: pollingMs (50) + publishTimeoutMs (100) +
-        // generous tolerance for testcontainer latency on CI. A regression
-        // that strips the wakeController abort or the withTimeout wrapper
-        // would push this comfortably past 1s.
+        // generous tolerance for testcontainer latency on CI. Catches
+        // the catastrophic regression where stop() ends up waiting for
+        // claimTimeoutMs (5min default) — see the onFail assertion
+        // below for the tighter `withTimeout`-fired guarantee.
         expect(elapsed).toBeLessThan(1_000);
+
+        // The publish-timeout path actually ran: `withTimeout` rejected
+        // at ~100ms and `handleFailure` routed the error through
+        // `onFail`. Without this, "elapsed < 1s" alone would still pass
+        // for a regression where `withTimeout` is stripped (the bus
+        // would hang for 200ms naturally, still well under 1s).
+        expect(onFail).toHaveBeenCalled();
+        const failCall = onFail.mock.calls[0] as [
+          { error: unknown; attempts: number },
+        ];
+        expect(failCall[0].error).toBeInstanceOf(OutboxPublishTimeoutError);
       });
     });
 
