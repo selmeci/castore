@@ -1,7 +1,7 @@
 ---
 title: 'feat: G-01 outbox conformance + fault-injection'
 type: feat
-status: completed
+status: in-progress
 date: 2026-04-24
 origin: specs/plans/2026-04-19-001-feat-g01-transactional-outbox-plan.md
 parent_units: [U9, U10]

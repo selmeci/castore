@@ -11,6 +11,7 @@ import {
 import type { OutboxRow, RelayRegistryEntry } from '../common/outbox/types';
 import { createOutboxRelay } from '../relay';
 import type {
+  DrizzleDatabaseLike,
   OutboxConformanceSetup,
   OutboxConformanceSetupResult,
 } from './outboxConformance';
@@ -33,7 +34,7 @@ const pushEvent = async (
 };
 
 const selectAllRows = async <T extends OutboxColumnTable>(
-  db: any,
+  db: DrizzleDatabaseLike,
   outboxTable: T,
 ): Promise<OutboxRow[]> =>
   (await db
@@ -45,9 +46,12 @@ const selectAllRows = async <T extends OutboxColumnTable>(
  * under induced failure — the parent §2 success criterion that the relay-core
  * unit tests could not close alone.
  *
- * Crash-simulation shape per parent plan: drop references to the "dying"
- * relay (let GC claim it) while leaving outbox DB rows in place; construct
- * a fresh `createOutboxRelay({...})` that observes the post-crash state.
+ * Crash-simulation shape: each scenario constructs the post-crash DB state
+ * directly by calling `ctx.claim()` (puts the outbox row in a claimed state
+ * with a populated `claim_token` and `claimed_at`) and then backdating
+ * `claimed_at` so the fresh relay's TTL reclaim is eligible. No relay
+ * instance is ever started and killed; instead the test asserts that a
+ * freshly constructed relay observing that state recovers correctly.
  * `state.stopping` is NOT used — the goal is abrupt termination, not
  * graceful shutdown.
  *
@@ -64,7 +68,7 @@ export const makeOutboxFaultInjectionSuite = <
   const { dialectName, setup, teardown } = config;
 
   describe(`drizzle ${dialectName} outbox relay — fault injection`, () => {
-    let ctx: OutboxConformanceSetupResult<A, T>;
+    let ctx: OutboxConformanceSetupResult<A, T, DrizzleDatabaseLike>;
 
     // Mirrors the conformance suite's loud-cleanup primitives so a slow
     // publishMessage mock can register its setTimeout for guaranteed
@@ -121,7 +125,11 @@ export const makeOutboxFaultInjectionSuite = <
       });
 
     beforeAll(async () => {
-      ctx = await setup();
+      ctx = (await setup()) as unknown as OutboxConformanceSetupResult<
+        A,
+        T,
+        DrizzleDatabaseLike
+      >;
       process.on('unhandledRejection', onUnhandledRejection);
     }, 120_000);
 

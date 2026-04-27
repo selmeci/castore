@@ -35,6 +35,34 @@ import {
 import type { BoundClaim, OutboxDialect } from '../relay';
 
 /**
+ * Minimal Drizzle database surface used by the conformance helpers.
+ * Every per-dialect setup returns an actual Drizzle database class (PgDatabase,
+ * MySqlDatabase, etc.); this interface is only used for internal structural
+ * typing inside the test suite so the exported types stay free of `any`.
+ *
+ * Drizzle's `select(...).from(...)` is a thenable that resolves to rows AND
+ * has a `.where(...)` that itself resolves to rows. Modelled here as the
+ * intersection of `Promise<unknown[]>` and `{ where }` so both `await
+ * db.select().from(table)` and `await db.select().from(table).where(cond)`
+ * type-check.
+ */
+type DrizzleSelectChain = Promise<unknown[]> & {
+  where: (condition: unknown) => Promise<unknown[]>;
+};
+
+export interface DrizzleDatabaseLike {
+  select: {
+    (): { from: (source: unknown) => DrizzleSelectChain };
+    (fields: unknown): { from: (source: unknown) => DrizzleSelectChain };
+  };
+  update: (table: unknown) => {
+    set: (values: unknown) => {
+      where: (condition: unknown) => Promise<unknown>;
+    };
+  };
+}
+
+/**
  * Shape returned by the per-dialect `setup()` callback. The per-dialect test
  * file owns the DB / testcontainer / schema lifecycle and builds the adapter,
  * outbox table handle, registry pieces, bound claim closure, reset fn, and
@@ -43,11 +71,12 @@ import type { BoundClaim, OutboxDialect } from '../relay';
 export interface OutboxConformanceSetupResult<
   A extends EventStorageAdapter,
   T extends OutboxColumnTable,
+  D = unknown,
 > {
   /** Outbox-enabled adapter built against the shared DB + outbox table. */
   adapter: A;
   /** Drizzle db handle (pg/mysql/sqlite). Opaque to the factory; used for raw SQL. */
-  db: any;
+  db: D;
   /** Dialect outbox table contract (Drizzle schema object). */
   outboxTable: T;
   /** ConnectedEventStore whose adapter === `adapter`; drives the registry. */
@@ -69,9 +98,10 @@ export interface OutboxConformanceSetupResult<
 export interface OutboxConformanceSetup<
   A extends EventStorageAdapter,
   T extends OutboxColumnTable,
+  D = unknown,
 > {
   dialectName: OutboxDialect;
-  setup: () => Promise<OutboxConformanceSetupResult<A, T>>;
+  setup: () => Promise<OutboxConformanceSetupResult<A, T, D>>;
   teardown: () => Promise<void>;
 }
 
@@ -124,13 +154,13 @@ const pushCounterEvent = async (
   );
 };
 
-const selectRowByKey = async <T extends OutboxColumnTable>(
-  db: any,
+const selectRowByKey = async <T extends OutboxColumnTable, D = unknown>(
+  db: D,
   outboxTable: T,
   aggregateId: string,
   version: number,
 ): Promise<OutboxRow | undefined> => {
-  const rows = (await db
+  const rows = (await (db as unknown as DrizzleDatabaseLike)
     .select(selectOutboxColumns(outboxTable))
     .from(outboxTable)
     .where(eq(outboxTable.aggregateId as never, aggregateId))) as OutboxRow[];
@@ -138,13 +168,13 @@ const selectRowByKey = async <T extends OutboxColumnTable>(
   return rows.find(r => r.version === version);
 };
 
-const markRowProcessed = async <T extends OutboxColumnTable>(
-  db: any,
+const markRowProcessed = async <T extends OutboxColumnTable, D = unknown>(
+  db: D,
   outboxTable: T,
   rowId: string,
   dialect: OutboxDialect,
 ): Promise<void> => {
-  await db
+  await (db as unknown as DrizzleDatabaseLike)
     .update(outboxTable)
     .set({
       processedAt: dialectNow(dialect),
@@ -177,7 +207,7 @@ export const makeOutboxConformanceSuite = <
   const { dialectName, setup, teardown } = config;
 
   describe(`drizzle ${dialectName} outbox relay — conformance`, () => {
-    let ctx: OutboxConformanceSetupResult<A, T>;
+    let ctx: OutboxConformanceSetupResult<A, T, DrizzleDatabaseLike>;
     // Per-test mock-timer registry. Slow publishMessage mocks register their
     // setTimeout handles here so afterEach can guarantee no leaked timers
     // outlive the test. Without this, a test that fires withTimeout (which
@@ -269,7 +299,11 @@ export const makeOutboxConformanceSuite = <
     let mockAbortController: AbortController;
 
     beforeAll(async () => {
-      ctx = await setup();
+      ctx = (await setup()) as unknown as OutboxConformanceSetupResult<
+        A,
+        T,
+        DrizzleDatabaseLike
+      >;
       process.on('unhandledRejection', onUnhandledRejection);
     }, 120_000);
 
@@ -805,13 +839,41 @@ export const makeOutboxConformanceSuite = <
         );
         expect(v1Retried?.dead_at).toBeNull();
 
-        // Now v1 AND v2 are eligible. Next runOnce can claim both.
+        // Now v1 AND v2 are eligible. Drain the relay until both are
+        // processed. A single runOnce isn't sufficient evidence that v2
+        // unblocked — FIFO claim could legitimately return only v1 first
+        // and `result.processed > 0` would still be satisfied without v2
+        // ever becoming claimable. Instead, drive the relay forward and
+        // assert end-state: both v1 AND v2 carry processed_at via the
+        // claim/publish path (not the markRowProcessed shortcut), and v2
+        // was observably claimable post-retryRow.
         vi.restoreAllMocks();
         vi.spyOn(ctx.channel, 'publishMessage').mockResolvedValue(
           undefined as never,
         );
-        const result = await relay.runOnce();
-        expect(result.processed).toBeGreaterThan(0);
+
+        // First runOnce processes v1 (FIFO head).
+        const firstResult = await relay.runOnce();
+        expect(firstResult.processed).toBeGreaterThan(0);
+        const v1Processed = await selectRowByKey(
+          ctx.db,
+          ctx.outboxTable,
+          aggregateId,
+          1,
+        );
+        expect(v1Processed?.processed_at).not.toBeNull();
+        expect(v1Processed?.dead_at).toBeNull();
+
+        // With v1 cleared, v2 must now be claimable — the direct
+        // observable that retryRow's unblock landed at the SQL predicate.
+        const v2Claimable = await ctx.claim({
+          workerClaimToken: 'unblocked',
+          aggregateNames: [ctx.connectedEventStore.eventStoreId],
+          batchSize: 10,
+          claimTimeoutMs: 60_000,
+        });
+        const v2Row = v2Claimable.find(r => r.version === 2);
+        expect(v2Row).toBeDefined();
       });
 
       it('R19 hook-swallow: throwing onDead and onFail do not fail runOnce or block dead transition', async () => {
@@ -1316,6 +1378,13 @@ export const makeOutboxConformanceSuite = <
         const aggregateId = randomUUID();
         await pushCounterEvent(ctx.connectedEventStore, aggregateId, 1);
 
+        // buildRegistry() installs its own happy-path publishMessage spy as
+        // a side effect, so build the registry FIRST and install the slow
+        // mock AFTER — otherwise mockResolvedValue(undefined) would clobber
+        // slowPublishHonoringAbort and the test would pass on the happy
+        // path instead of exercising publishTimeoutMs / wakeController.
+        const { registry } = buildRegistry();
+
         // publishMessage hangs for 200ms — well past publishTimeoutMs (100).
         // The relay's withTimeout fires at ~100ms and rejects with
         // OutboxPublishTimeoutError; runContinuously then routes through
@@ -1325,7 +1394,6 @@ export const makeOutboxConformanceSuite = <
           slowPublishHonoringAbort(200, mockAbortController.signal),
         );
 
-        const { registry } = buildRegistry();
         const relay = makeRelay(registry, {
           options: {
             pollingMs: 50,
