@@ -15,9 +15,20 @@ import {
 } from 'drizzle-orm/postgres-js';
 import { Pool } from 'pg';
 import postgres from 'postgres';
+import { vi } from 'vitest';
+
+import { ConnectedEventStore } from '@castore/core';
 
 import { makeAdapterConformanceSuite } from '../__tests__/conformance';
+import {
+  makeCounterBus,
+  makeCounterEventStore,
+  makeOutboxConformanceSuite,
+} from '../__tests__/outboxConformance';
+import { makeOutboxFaultInjectionSuite } from '../__tests__/outboxFaultInjection';
 import { DrizzleEventAlreadyExistsError } from '../common/error';
+import { claimPg, createOutboxRelay } from '../relay';
+import type { BoundClaim } from '../relay';
 import { DrizzlePgEventStorageAdapter } from './adapter';
 import {
   eventColumns,
@@ -76,6 +87,92 @@ makeAdapterConformanceSuite({
   teardown: async () => {
     /* container lifecycle is owned by the file, not the factory */
   },
+});
+
+// Outbox conformance — exercises the full relay surface (claim, fencing, TTL,
+// admin, registry validation, lifecycle) against the real pg driver. Shares
+// the file-level testcontainer with the adapter conformance suite above.
+
+const createPgOutboxSql = sql`
+  CREATE TABLE IF NOT EXISTS castore_outbox (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_name  TEXT NOT NULL,
+    aggregate_id    TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    created_at      TIMESTAMPTZ(3) NOT NULL DEFAULT NOW(),
+    claim_token     TEXT,
+    claimed_at      TIMESTAMPTZ(3),
+    processed_at    TIMESTAMPTZ(3),
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    last_attempt_at TIMESTAMPTZ(3),
+    dead_at         TIMESTAMPTZ(3),
+    CONSTRAINT outbox_aggregate_version_uq UNIQUE (aggregate_name, aggregate_id, version)
+  );
+`;
+const dropPgOutboxSql = sql`DROP TABLE IF EXISTS castore_outbox;`;
+
+const pgOutboxSetup = async () => {
+  const eventStore = makeCounterEventStore('counters');
+  const bus = makeCounterBus('counters');
+  const outboxAdapter = new DrizzlePgEventStorageAdapter({
+    db,
+    eventTable,
+    outbox: outboxTable,
+  });
+  const connectedEventStore = new ConnectedEventStore(eventStore, bus);
+  connectedEventStore.eventStorageAdapter = outboxAdapter;
+
+  return {
+    adapter: outboxAdapter,
+    db,
+    outboxTable,
+    connectedEventStore,
+    channel: bus,
+    claim: (args => claimPg({ db, outboxTable, ...args })) as BoundClaim,
+    reset: async () => {
+      await db.execute(dropTableSql);
+      await db.execute(createTableSql);
+      await db.execute(dropPgOutboxSql);
+      await db.execute(createPgOutboxSql);
+    },
+    backdateClaimedAt: async (rowId: string, msAgo: number) => {
+      await db.execute(
+        sql`UPDATE castore_outbox SET claimed_at = NOW() - ${sql.raw(`INTERVAL '${Math.floor(msAgo)} milliseconds'`)} WHERE id = ${rowId}::uuid`,
+      );
+    },
+    uniqueConstraintExists: async () => {
+      const raw: unknown = await db.execute(
+        sql`SELECT conname FROM pg_constraint WHERE conname = 'outbox_aggregate_version_uq'`,
+      );
+      const rows = Array.isArray(raw)
+        ? raw
+        : ((raw as { rows?: unknown[] }).rows ?? []);
+
+      return rows.length > 0;
+    },
+    deleteEventRow: async (aggregateId: string) => {
+      await db.execute(
+        sql`DELETE FROM event WHERE aggregate_id = ${aggregateId}`,
+      );
+    },
+  };
+};
+
+const pgOutboxTeardown = async (): Promise<void> => {
+  /* container lifecycle is owned by the file, not the factory */
+};
+
+makeOutboxConformanceSuite({
+  dialectName: 'pg',
+  setup: pgOutboxSetup,
+  teardown: pgOutboxTeardown,
+});
+
+makeOutboxFaultInjectionSuite({
+  dialectName: 'pg',
+  setup: pgOutboxSetup,
+  teardown: pgOutboxTeardown,
 });
 
 // Dialect-specific scenarios live below — they are NOT part of the shared
@@ -293,4 +390,137 @@ describe('drizzle pg storage adapter — outbox force-replay idempotency', () =>
       : ((outboxRows as { rows?: unknown[] }).rows ?? []);
     expect(rows).toHaveLength(1);
   });
+});
+
+// OQ1 from specs/plans/2026-04-24-001-feat-g01-outbox-conformance-plan.md.
+//
+// Drain throughput / per-row turnaround benchmark used to ratify the relay's
+// numeric defaults (`baseMs`, `ceilingMs`, `maxAttempts`, `claimTimeoutMs`,
+// `publishTimeoutMs`, `pollingMs`, `batchSize`) recorded in
+// `docs/solutions/best-practices/outbox-conformance-suite-patterns-2026-04-24.md`.
+//
+// Committed as `it.skip(...)` so Vitest never runs it on CI — a 10k-row pg
+// testcontainer drain is I/O-flaky on shared runners and not worth gating
+// PRs on. Run manually:
+//
+//   1. Replace `it.skip(` with `it(` in the body below.
+//   2. From the package directory:
+//      `pnpm vitest run pg/adapter.unit.test.ts -t "drain"`
+//   3. Capture the `OQ1_DRAIN_BENCHMARK ...` line from console output.
+//   4. Restore `it.skip(`.
+//
+// Do NOT swap to `describe.skipIf(!process.env.RUN_BENCHMARK)` or any other
+// env gate — that invites "let's just run it once on CI" pressure that
+// re-introduces the flake risk we are avoiding here. If a future need for
+// repeatable benchmarks appears, that is a separate decision.
+describe('drizzle pg outbox relay — numeric defaults drain benchmark (OQ1, manual)', () => {
+  const TOTAL_AGGREGATES = 100;
+  const EVENTS_PER_AGGREGATE = 100; // 10_000 rows total
+
+  const percentile = (sorted: number[], p: number): number => {
+    if (sorted.length === 0) {
+      return 0;
+    }
+    const idx = Math.min(sorted.length - 1, Math.floor(p * sorted.length));
+
+    return sorted[idx] ?? 0;
+  };
+
+  it.skip('drain ~10k pg rows: throughput / p50 / p95 / p99', async () => {
+    const ctx = await pgOutboxSetup();
+    await ctx.reset();
+
+    // Seed phase: 10_000 events distributed across 100 aggregates. Per-
+    // aggregate version sequencing keeps the optimistic-concurrency check
+    // happy; cross-aggregate seeding runs in parallel up to the postgres-js
+    // pool cap. Seed wallclock is logged separately so the headline drain
+    // metric is not skewed by INSERT cost.
+    const seedStart = performance.now();
+    const aggregateIds = Array.from({ length: TOTAL_AGGREGATES }, () =>
+      randomUUID(),
+    );
+    await Promise.all(
+      aggregateIds.map(async aggregateId => {
+        for (let v = 1; v <= EVENTS_PER_AGGREGATE; v += 1) {
+          await ctx.connectedEventStore.pushEvent(
+            {
+              aggregateId,
+              version: v,
+              type: 'COUNTER_INCREMENTED',
+              timestamp: new Date(Date.now() + v).toISOString(),
+              payload: { at: v },
+            },
+            { force: false },
+          );
+        }
+      }),
+    );
+    const seedMs = performance.now() - seedStart;
+    const totalRows = TOTAL_AGGREGATES * EVENTS_PER_AGGREGATE;
+
+    // Inter-publish gap proxies per-row end-to-end SQL overhead (claim +
+    // fencedUpdate + mark-processed) when the bus side is a no-op. p50/p95/
+    // p99 of this distribution are what the doc table cites for
+    // publishTimeoutMs headroom — the publish itself is mocked to resolve
+    // immediately, so the gap reflects relay-internal cost, not bus cost.
+    const interPublishMs: number[] = [];
+    let lastPublishAt: number | null = null;
+    vi.spyOn(ctx.channel, 'publishMessage').mockImplementation((async () => {
+      const now = performance.now();
+      if (lastPublishAt !== null) {
+        interPublishMs.push(now - lastPublishAt);
+      }
+      lastPublishAt = now;
+    }) as never);
+
+    // Default relay options — that is what we are validating. Do NOT
+    // override any knob from the parent §K-Defaults table here.
+    const relay = createOutboxRelay({
+      dialect: 'pg',
+      adapter: ctx.adapter,
+      db: ctx.db,
+      outboxTable: ctx.outboxTable,
+      claim: ctx.claim,
+      registry: [
+        {
+          eventStoreId: ctx.connectedEventStore.eventStoreId,
+          connectedEventStore: ctx.connectedEventStore,
+          channel: ctx.channel,
+        },
+      ],
+    });
+
+    // Drain to settlement. claim returning 0 rows means there is nothing
+    // left in CLAIMABLE state — every row is processed_at OR dead_at.
+    const drainStart = performance.now();
+    let totalProcessed = 0;
+    let iterations = 0;
+    for (;;) {
+      const result = await relay.runOnce();
+      iterations += 1;
+      totalProcessed += result.processed;
+      if (result.claimed === 0) {
+        break;
+      }
+    }
+    const drainMs = performance.now() - drainStart;
+
+    expect(totalProcessed).toBe(totalRows);
+
+    interPublishMs.sort((a, b) => a - b);
+    const summary = {
+      totalRows,
+      seedMs: Math.round(seedMs),
+      drainMs: Math.round(drainMs),
+      throughputRowsPerSec: Math.round((totalRows / drainMs) * 1000),
+      iterations,
+      perRowTurnaroundMs: {
+        p50: Number(percentile(interPublishMs, 0.5).toFixed(2)),
+        p95: Number(percentile(interPublishMs, 0.95).toFixed(2)),
+        p99: Number(percentile(interPublishMs, 0.99).toFixed(2)),
+      },
+    };
+
+    console.log('OQ1_DRAIN_BENCHMARK', JSON.stringify(summary));
+  }, 600_000);
 });
