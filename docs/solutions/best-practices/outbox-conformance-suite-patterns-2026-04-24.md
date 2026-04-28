@@ -156,6 +156,60 @@ by construction, in this run). The benchmark stays committed as
 `it.skip(...)` so this measurement can be re-taken on demand without
 adding pg-testcontainer load to CI.
 
+## pg advisory-lock collision behavior — OQ2
+
+The G-01 sub-plan's OQ2 asked for an empirical advisory-lock collision
+measurement. Closing the OQ as a write-up — the collision model is
+already pinned by an in-tree test, and an empirical-rate harness at
+N>2 is itself deferred (see "Out of scope" below).
+
+### Lock-id derivation
+
+`packages/event-storage-adapter-drizzle/src/pg/outbox/claim.ts:75-78`
+constructs the advisory lock as:
+
+```sql
+pg_try_advisory_xact_lock(
+  hashtext(aggregate_name || ':' || aggregate_id)
+)
+```
+
+The single-argument form takes a 32-bit integer key. Two aggregates
+hash to the same key only when `hashtext('A:1') == hashtext('B:7')`
+— a textbook 32-bit hash collision, expected at ~50% probability
+around √(2³²) ≈ 65,536 distinct aggregates by birthday-paradox math
+but vanishingly small at the per-claim-batch scale (`batchSize: 50`)
+the relay actually runs at.
+
+The lock is transaction-scoped (`_xact_`), so it releases on COMMIT
+or ROLLBACK with no session-state leak. No explicit `pg_advisory_unlock`
+call is needed and there is no path that holds the lock across `runOnce`
+boundaries.
+
+### Two collision modes (correctness vs. throughput)
+
+| Mode | What collides | Relay impact | Tested by |
+|---|---|---|---|
+| **Same-aggregate, N concurrent claimers** (correctness-load-bearing) | The `try_advisory_xact_lock` call against the same `(name, id)` from N transactions in flight at once. Exactly one tx acquires; N-1 see the predicate fail, the row is filtered out of their candidate set, the UPDATE returns 0 rows. | Per-aggregate FIFO is preserved. The "loser" simply claims nothing for that aggregate this round; it picks up next pollingMs tick. | `pg/outbox/claim.unit.test.ts:199-233` ("two concurrent claims against the same aggregate are serialized") proves the N=2 case: `firstCount + secondCount === 1`, winner gets v1 only, loser gets nothing. |
+| **Different-aggregate, hashtext-bucket collision** (throughput-only) | Two aggregates whose `hashtext(name||':'||id)` happens to coincide on the 32-bit space. While one holds the advisory lock, the other's `try_advisory_xact_lock` returns false even though the rows are independent. | One aggregate's claim attempt no-ops this round and tries again next pollingMs tick. No correctness impact — the per-aggregate FIFO subquery already handles ordering, and the "missed" aggregate stays eligible. | Not exercised in unit tests because it is a probabilistic-throughput knob, not an invariant. The relay-source comment at `pg/outbox/claim.ts:36-40` explicitly classifies this as a "throughput cost, never a correctness cost". |
+
+The single in-tree test at N=2 is the load-bearing proof: it shows
+exactly-one-winner under same-aggregate contention. By the same lock
+semantics, scaling to N concurrent same-aggregate claimers gives the
+expected per-attempt collision rate of `(N-1)/N` for that aggregate's
+contenders, with throughput recovered on the next tick. No new test
+or measurement was required to close OQ2 against the success-criteria
+bar set by parent §2.
+
+### Out of scope
+
+A bespoke pg-only stress harness measuring per-tick `try_advisory_xact_lock`
+return-value rates at N=4, N=8, N=16 against M same-aggregate rows
+would produce empirical numbers — but it adds new flake surface (real
+concurrency timing, container CPU contention) without raising the bar
+on any §2 success criterion. Treat that as a future exercise if a
+production incident motivates it; do not block G-01 closeout on it.
+
 ## Related learnings
 
 - `docs/solutions/integration-issues/drizzle-orm-api-gaps-multi-dialect-adapter-2026-04-18.md` — mysql's UPDATE-lacks-`.returning()` gotcha; shapes how `fencedUpdate` extracts affected-row counts per dialect.
