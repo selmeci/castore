@@ -80,7 +80,9 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
     )
     .run();
 
-  const counterEventType = new EventType({ type: 'COUNTER_INCREMENTED' });
+  const counterEventType = new EventType<'COUNTER_INCREMENTED', { at: number }>(
+    { type: 'COUNTER_INCREMENTED' },
+  );
 
   interface CounterAggregate {
     aggregateId: string;
@@ -131,16 +133,13 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
         },
       ],
       hooks: {
-        onDead: (row, err) => {
-          console.warn(
-            `[outbox] Row ${row.id} is dead:`,
-            err instanceof Error ? err.message : String(err),
-          );
+        onDead: ({ row, lastError }) => {
+          console.warn(`[outbox] Row ${row.id} is dead:`, lastError);
         },
-        onFail: (row, err, attempts, nextBackoffMs) => {
+        onFail: ({ row, error, attempts, nextBackoffMs }) => {
           console.warn(
             `[outbox] Publish failed for row ${row.id} (attempt ${attempts}, next retry in ${nextBackoffMs}ms):`,
-            err instanceof Error ? err.message : String(err),
+            error instanceof Error ? error.message : String(error),
           );
         },
       },

@@ -70,12 +70,14 @@ const relay = createOutboxRelay({
     },
   ],
   hooks: {
-    onDead: (row, err) => {
+    onDead: ({ row, lastError }) => {
       // Wire to your alerting system
-      console.error(`[outbox] dead row ${row.id}:`, err);
+      console.error(`[outbox] dead row ${row.id}:`, lastError);
     },
-    onFail: (row, err, attempts, nextBackoffMs) => {
-      console.warn(`[outbox] retry ${attempts} for ${row.id}`);
+    onFail: ({ row, attempts, nextBackoffMs }) => {
+      console.warn(
+        `[outbox] retry ${attempts} for ${row.id}, next in ${nextBackoffMs}ms`,
+      );
     },
   },
 });

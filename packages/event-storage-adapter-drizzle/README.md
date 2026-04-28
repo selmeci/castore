@@ -445,12 +445,15 @@ const relay = createOutboxRelay({
     },
   ],
   hooks: {
-    onDead: (row, err) => {
+    onDead: ({ row, lastError }) => {
       // Wire to PagerDuty / Datadog / CloudWatch
-      console.error(`[outbox] dead row ${row.id}:`, err);
+      console.error(`[outbox] dead row ${row.id}:`, lastError);
     },
-    onFail: (row, err, attempts, nextBackoffMs) => {
-      console.warn(`[outbox] retry ${attempts} for ${row.id}, next in ${nextBackoffMs}ms`);
+    onFail: ({ row, error, attempts, nextBackoffMs }) => {
+      console.warn(
+        `[outbox] retry ${attempts} for ${row.id}, next in ${nextBackoffMs}ms:`,
+        error,
+      );
     },
   },
   options: {
