@@ -387,7 +387,7 @@ When `outbox` is present, the adapter sets two capability symbols on its instanc
 
 ### Schema
 
-The outbox table has 10 columns. All mutation timestamps are DB-authoritative (server-side `NOW()` / `strftime`); worker wall-clock is not trusted.
+The outbox table has 12 columns. Mutation timestamps are DB-authoritative for PostgreSQL and MySQL (server-side `NOW()`); for SQLite `created_at` is client-generated ISO-8601 text (the schema uses `.$defaultFn(() => new Date().toISOString())`).
 
 | Column         | pg type            | mysql type             | sqlite type                 | Description                                          |
 | -------------- | ------------------ | ---------------------- | --------------------------- | ---------------------------------------------------- |
@@ -395,7 +395,7 @@ The outbox table has 10 columns. All mutation timestamps are DB-authoritative (s
 | aggregate_name | `text`             | `varchar(255)`         | `text`                      | Logical eventStoreId (matches event table)            |
 | aggregate_id   | `text`             | `varchar(64)`          | `text`                      | Aggregate id                                          |
 | version        | `integer`          | `int`                  | `integer`                   | Event version within the aggregate                   |
-| created_at     | `timestamptz(3)`   | `datetime(3)`          | `text` (ISO-8601)           | Row creation time; server default                     |
+| created_at     | `timestamptz(3)`   | `datetime(3)`          | `text` (ISO-8601)           | Row creation time; server default (SQLite: client-generated) |
 | claim_token    | `text` (nullable)  | `varchar(36)` nullable | `text` nullable             | Cryptographic token set at claim time; fencing key   |
 | claimed_at    | `timestamptz(3)`   | `datetime(3)` nullable | `text` nullable             | Last claim time; TTL threshold for re-claim          |
 | processed_at  | `timestamptz(3)`   | `datetime(3)` nullable | `text` nullable             | Set when publish succeeds                             |
@@ -469,13 +469,13 @@ const relay = createOutboxRelay({
 
 | Option            | Default               | Description                                           |
 | ----------------- | --------------------- | ----------------------------------------------------- |
-| `baseMs`          | `100`                 | First backoff; doubles each attempt (`base * 2^(n-1)`) |
-| `ceilingMs`       | `30_000`              | Hard backoff cap                                      |
-| `maxAttempts`     | `5`                   | Dead transition threshold                             |
-| `claimTimeoutMs`  | `60_000`              | TTL: stale claim re-eligible after this many ms       |
-| `publishTimeoutMs`| `floor(claim/2)`      | Hard wall-clock cap on a single publish; MUST be `< claimTimeoutMs` |
-| `pollingMs`       | `5_000`               | Sleep between empty `runOnce` iterations              |
-| `batchSize`       | `100`                 | Max rows claimed per `runOnce` pass                   |
+| `baseMs`          | `250`                 | First backoff; doubles each attempt (`base * 2^(n-1)`) |
+| `ceilingMs`       | `60_000`              | Hard backoff cap                                      |
+| `maxAttempts`     | `10`                  | Dead transition threshold                             |
+| `claimTimeoutMs`  | `300_000`             | TTL: stale claim re-eligible after this many ms       |
+| `publishTimeoutMs`| `150_000`             | Hard wall-clock cap on a single publish; MUST be `< claimTimeoutMs` |
+| `pollingMs`       | `250`                 | Sleep between empty `runOnce` iterations              |
+| `batchSize`       | `50`                  | Max rows claimed per `runOnce` pass                   |
 
 **Run modes:**
 

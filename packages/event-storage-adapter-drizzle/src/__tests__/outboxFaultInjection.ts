@@ -490,7 +490,15 @@ export const makeOutboxFaultInjectionSuite = <
           }
         }
 
-        let callIdx = 0;
+        // Track per-row attempt counts so the kill bucket is stable per
+        // {aggregate, version, attempt} rather than dependent on global
+        // call order (which varies by dialect row-return order).
+        const attemptCounts = new Map<string, number>();
+        const getAttemptKey = (aggregateId: string, version: number) =>
+          `${aggregateId}:${version}`;
+        const stringHash = (s: string): number =>
+          [...s].reduce((sum, c) => sum + c.charCodeAt(0), 0);
+
         // Successful bus deliveries (the bus actually saw the envelope) —
         // ordered by call sequence. Used for the per-aggregate FIFO
         // assertion. Pre-publish rejects are NOT recorded here because
@@ -498,15 +506,17 @@ export const makeOutboxFaultInjectionSuite = <
         const busDeliveries: Array<{ aggregateId: string; version: number }> =
           [];
         const publishImpl = async (msg: unknown): Promise<void> => {
-          const idx = callIdx;
-          callIdx += 1;
           const event = (
             msg as { event: { aggregateId: string; version: number } }
           ).event;
-          const bucket = idx % 10;
+          const key = getAttemptKey(event.aggregateId, event.version);
+          const attempt = attemptCounts.get(key) ?? 0;
+          attemptCounts.set(key, attempt + 1);
+          const bucket =
+            stringHash(`${event.aggregateId}:${event.version}:${attempt}`) % 10;
           if (bucket < 2) {
             // 20% post-claim-pre-publish kill
-            throw new Error(`pre-publish kill #${idx}`);
+            throw new Error(`pre-publish kill ${key}#${attempt}`);
           }
           // For both the slow-publish and normal cohorts the bus has
           // received the envelope; record before the slow wait so the

@@ -177,8 +177,10 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
     // entry point; the SIGTERM handler calls `relay.stop()`.
     const continuousPromise = relay.runContinuously();
 
-    // Give the relay one polling cycle to settle into its loop.
-    await new Promise(r => setTimeout(r, 75));
+    // SQLite shares one connection: wait for the relay to finish its first
+    // empty runOnce() + pollingMs sleep so our pushEvent BEGIN doesn't
+    // collide with an in-flight claim transaction.
+    await new Promise(r => setTimeout(r, 150));
 
     // Push events while the relay is already running.
     for (let v = 1; v <= 5; v++) {
@@ -190,8 +192,12 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
       });
     }
 
-    // Wait for the relay to poll, claim, and publish.
-    await new Promise(r => setTimeout(r, 300));
+    // Poll until all events are published (deterministic, not wall-clock).
+    let attempts = 0;
+    while (receivedMessages.length < 5 && attempts < 100) {
+      await new Promise(r => setTimeout(r, 25));
+      attempts++;
+    }
 
     expect(receivedMessages).toHaveLength(5);
     for (let i = 0; i < 5; i++) {
@@ -216,9 +222,6 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
   it('stop() resolves cleanly even when the outbox is empty', async () => {
     const relay = makeRelay();
     const continuousPromise = relay.runContinuously();
-
-    // Let it spin for one empty cycle.
-    await new Promise(r => setTimeout(r, 150));
 
     await relay.stop();
     await expect(continuousPromise).resolves.toBeUndefined();

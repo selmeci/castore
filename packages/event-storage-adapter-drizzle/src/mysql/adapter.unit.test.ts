@@ -132,7 +132,7 @@ const mysqlOutboxSetup = async () => {
     },
     backdateClaimedAt: async (rowId: string, msAgo: number) => {
       await connection.query(
-        `UPDATE castore_outbox SET claimed_at = DATE_SUB(NOW(3), INTERVAL ${Math.floor(msAgo)} / 1000 SECOND) WHERE id = ?`,
+        `UPDATE castore_outbox SET claimed_at = DATE_SUB(NOW(3), INTERVAL ${Math.floor(msAgo * 1000)} MICROSECOND) WHERE id = ?`,
         [rowId],
       );
     },

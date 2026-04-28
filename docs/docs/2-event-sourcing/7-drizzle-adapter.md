@@ -17,7 +17,7 @@ The outbox pattern solves this by turning the dual-write into two phases separat
 
 ## Minimal write-path setup
 
-Enable outbox by passing an `outbox` table to the adapter constructor. You can use the prebuilt `outboxTable` or spread `outboxColumns` into your own table.
+Enable outbox by passing an `outbox` table to the adapter constructor. You can use the prebuilt `outboxTable`, or spread both `outboxColumns` and `outboxTableConstraints` into your own table (the `outbox_aggregate_version_uq` constraint is load-bearing).
 
 ```ts
 import { DrizzlePgEventStorageAdapter, eventTable, outboxTable } from '@castore/event-storage-adapter-drizzle/pg';
@@ -88,7 +88,7 @@ const relay = createOutboxRelay({
 
 ## Liveness queries
 
-Monitor relay health with three DB-authoritative queries. All use server time, not worker wall-clock.
+Monitor relay health with three DB-authoritative queries. PostgreSQL and MySQL use DB-side server time; for SQLite the `created_at` value is client-authored (the schema uses `.$defaultFn(() => new Date().toISOString())`), so age measurements can be skewed if writers and relays run on hosts with divergent clocks.
 
 ### Age (oldest unprocessed row)
 
@@ -103,7 +103,7 @@ SELECT TIMESTAMPDIFF(MICROSECOND, MIN(created_at), NOW(3)) / 1000 AS age_ms
 FROM castore_outbox
 WHERE processed_at IS NULL AND dead_at IS NULL;
 
--- SQLite
+-- SQLite (note: julianday('now') is DB-side, but created_at is client-generated ISO-8601 text)
 SELECT CAST((julianday('now') - julianday(MIN(created_at))) * 86400000 AS INTEGER) AS age_ms
 FROM castore_outbox
 WHERE processed_at IS NULL AND dead_at IS NULL;
