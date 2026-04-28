@@ -210,6 +210,83 @@ concurrency timing, container CPU contention) without raising the bar
 on any §2 success criterion. Treat that as a future exercise if a
 production incident motivates it; do not block G-01 closeout on it.
 
+## mysql vs pg fault-injection divergence — OQ3
+
+The G-01 sub-plan's OQ3 asked for a "deferred-to-implementation
+findings" subsection capturing any pass/fail or timing/error-shape
+divergence between the two server dialects in the U10 fault-injection
+suite. Source of truth: the existing scenarios in
+`packages/event-storage-adapter-drizzle/src/__tests__/outboxFaultInjection.ts`
+and the fault-injection-tagged commits on this branch (`git log
+--grep "fault-injection"`: `364daf1`, `19b3404`, `5dd4bb2`,
+`99d12f9`, `e96ef02`).
+
+### Top-line: zero pass/fail divergence
+
+Each of the four fault-injection scenarios passes byte-identically on
+pg + mysql + sqlite (with the sqlite carve-out, see below):
+
+| Scenario | What it proves | Dialect parity |
+|---|---|---|
+| crash post-claim-pre-publish (3 sub-cases: orphaned, mid-`handleFailure`, post-`publishTimeoutMs` pre-retry) | TTL reclaim recovers every claim-orphaned row; total publishes ≤ `maxAttempts + 1` | identical |
+| `maxAttempts` exhaustion (100% failure) | Every row → `dead_at`; `onDead` once/row; `onFail` `(maxAttempts-1)` × row | identical |
+| FIFO preserved under crash+recover (per-aggregate v1..v3) | Bus receives `[1, 2, 3]` even with a mid-aggregate crash on v1 | identical |
+| No stuck rows under mixed workload (100 × 10) | Every row is `processed_at` OR `dead_at`; per-aggregate bus FIFO monotonically non-decreasing | identical |
+
+The factory-shaped suite (`makeOutboxFaultInjectionSuite`) takes one
+dialect-agnostic setup contract and runs every scenario uniformly — no
+dialect-conditional `it.skip` exists in the suite body. That is the
+primary OQ3 finding: U10 didn't fork along dialect lines.
+
+### Implementation-level divergences (relay layer absorbs them)
+
+The dialects DO differ at the relay's mechanism layer; the test surface
+is uniform because the relay normalises across them. Captured here so
+future debugging of an actual pass/fail divergence has the right
+mental model:
+
+| Concern | pg | mysql | sqlite |
+|---|---|---|---|
+| **Claim primitive** | `pg_try_advisory_xact_lock(hashtext(name\|\|':'\|\|id))` predicate inside the SELECT (`pg/outbox/claim.ts:75`); winner does `UPDATE ... RETURNING` in one round-trip. | Earliest-per-aggregate subquery `(name, id, MIN(version))` + `FOR UPDATE SKIP LOCKED` raw fragment (`mysql/outbox/claim.ts`); two-step SELECT ids → UPDATE because mysql lacks `RETURNING`. | Single-writer transaction; no concurrent-claim contention by construction. |
+| **fencedUpdate result-shape** | `.returning({id})` → `rows.length` (`common/outbox/fencedUpdate.ts:69`). | `extractMysqlAffectedRows` parses `[ResultSetHeader, FieldPacket[]]` from `mysql2`; throws `NonRetriableRelayError` if neither tuple-shape nor header-direct-shape matches (`fencedUpdate.ts:116-134`). The supervisor classifier uses that error class to abort `runContinuously` instead of looping on a deterministic driver-shape regression. | `.returning()` like pg; no shape-detection branch. |
+| **dialectNow precision** | `NOW()` — timestamptz, microseconds. | `NOW(3)` — datetime(3), milliseconds. | `strftime('%Y-%m-%dT%H:%M:%fZ','now')` — ISO string, milliseconds. |
+| **Driver lock-error surface** (not actually exercised in U10) | Advisory-lock contention surfaces as `false` from `pg_try_advisory_xact_lock` — never as an exception. Serialisation failure (`40001`) and deadlock (`40P01`) do not arise here because `claimPg` runs at READ COMMITTED. | `FOR UPDATE` contention can surface as `ER_LOCK_WAIT_TIMEOUT` (1205) past `innodb_lock_wait_timeout`, but `SKIP LOCKED` short-circuits — locked rows are filtered out, no exception raised. `ER_LOCK_DEADLOCK` (1213) is theoretically possible on circular waits and would propagate as a driver error if it happened. | n/a — single writer. |
+| **`DrizzleQueryError` wrapping (parent R13)** | `postgres-js` raw errors bubble up; drizzle wraps some paths (`drizzle.execute(sql\`…\`)` errors) but not all. | `mysql2` raw errors with `code: 'ER_*'` + numeric `errno`; drizzle wraps similarly to pg. | `better-sqlite3` raw errors. |
+
+U10's assertions key off the relay's typed error surface
+(`OutboxPublishTimeoutError`, `OutboxRowNotFoundError`,
+`RetryRowClaimedError`, `NonRetriableRelayError`) rather than driver
+error classes or message strings. That's why dialect-specific lock-
+error wrapping doesn't cause test divergence — the relay translates
+every meaningful failure into a typed class before the test sees it.
+
+### sqlite carve-out
+
+`makeOutboxFaultInjectionSuite`'s docstring explicitly carves sqlite
+out of two-concurrent-relay and cross-aggregate-parallelism scenarios
+per parent §2 — sqlite's single-writer model would force sequential
+execution and the scenarios would prove nothing about real
+concurrency. The crash-simulation scenarios (which build the post-
+crash state directly via `ctx.claim()` + `backdateClaimedAt` rather
+than through real concurrency) DO run on sqlite, because they only
+depend on the row state-machine transitions, not on parallel workers.
+
+### Timing tolerance — mysql is the long pole
+
+Commit `99d12f9` documents the suite-runtime tuning: the mixed-
+workload scenario was given a 30-second test timeout because mysql
+solo run is ~3s and full-suite ~5s. pg is comparable; sqlite is
+fastest. The 30s envelope covers all three with margin and is the
+only timing knob that needed dialect-aware sizing.
+
+### Out of scope
+
+A bespoke fault-injection-divergence stress harness (e.g. running
+the same scenario at 10× the row count specifically to expose any
+mysql-only timing regressions) was not built — every scenario already
+passes within the 30s envelope. Re-open if a production incident
+reveals a dialect-specific failure that the existing assertions miss.
+
 ## Related learnings
 
 - `docs/solutions/integration-issues/drizzle-orm-api-gaps-multi-dialect-adapter-2026-04-18.md` — mysql's UPDATE-lacks-`.returning()` gotcha; shapes how `fencedUpdate` extracts affected-row counts per dialect.
