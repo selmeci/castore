@@ -1,7 +1,7 @@
 ---
 title: 'feat: G-01 outbox conformance + fault-injection'
 type: feat
-status: in-progress
+status: completed
 date: 2026-04-24
 origin: specs/plans/2026-04-19-001-feat-g01-transactional-outbox-plan.md
 parent_units: [U9, U10]
@@ -95,31 +95,35 @@ is wrong, pause and raise it as an Open Question, don't silently diverge.
   timeout path (bus rejected, retry scheduled) rather than trying to
   construct the unsound state.
 
-## Open Questions carried from parent (to resolve during execution)
+## Open Questions carried from parent (resolved)
 
-The parent plan's "Deferred to Implementation" list still applies. The
-ones this sub-plan must resolve:
+All three OQs carried from the parent are closed. Resolutions live in
+`docs/solutions/best-practices/outbox-conformance-suite-patterns-2026-04-24.md`:
 
-- **Final numeric defaults** (`baseMs`, `ceilingMs`, `maxAttempts`,
-  `claimTimeoutMs`, `publishTimeoutMs`, polling cadence per dialect) —
-  the conformance suite is the venue for tuning. Relay-core shipped with
-  conservative defaults (`claimTimeoutMs = 5min`, `publishTimeoutMs =
-  claimTimeoutMs / 2`, `baseMs = 250ms`, `ceilingMs = 60s`, `maxAttempts
-  = 10`). Expected action: run the drain test (~10k outbox rows, single
-  pg relay) and either ratify the defaults or adjust within the
-  R15/R18/R14 envelope. Document the final values in the sub-plan's
-  execution notes.
-- **pg advisory-lock collision measurement** — parent §Open Questions
-  asks for empirical serialization measurement. The conformance suite's
-  cross-aggregate parallelism scenario is the natural place to log
-  observed collision rates. Output goes into a future `docs/solutions/`
-  learning, not into the suite's pass/fail contract.
-- **Fault-injection determinism on mysql vs pg** — different drivers
-  surface different failure shapes at different points in the
-  transaction lifecycle (parent R13 documents `DrizzleQueryError`
-  wrapping). If the fault-injection helper produces different
-  pass/fail behavior between dialects for the same scenario, capture
-  it as a deferred-to-implementation finding rather than paper over it.
+- **OQ1 — Final numeric defaults**: ratified. Empirical 10k-row pg drain
+  on default options shows throughput ~176 rows/sec, per-row turnaround
+  p50 6.29ms / p95 7.69ms / p99 19.39ms — every percentile sits ~four
+  orders of magnitude inside `publishTimeoutMs = 150,000ms`. See
+  [`outbox-conformance-suite-patterns-2026-04-24.md` § Empirical drain — OQ1](../../docs/solutions/best-practices/outbox-conformance-suite-patterns-2026-04-24.md#empirical-drain--oq1).
+  Procedure committed as `it.skip(...)` at
+  `packages/event-storage-adapter-drizzle/src/pg/adapter.unit.test.ts`
+  under `describe('drizzle pg outbox relay — numeric defaults drain
+  benchmark (OQ1, manual)', …)`.
+- **OQ2 — pg advisory-lock collision measurement**: closed as a write-up.
+  Lock-id derivation (`hashtext(name||':'||id)`) and the same-aggregate
+  vs. hashtext-bucket collision modes are documented; the N=2 correctness
+  case is already pinned by `pg/outbox/claim.unit.test.ts:199-233`. An
+  empirical N>2 rate harness is itself deferred — adds flake surface
+  without raising any §2 bar. See
+  [`outbox-conformance-suite-patterns-2026-04-24.md` § pg advisory-lock collision behavior — OQ2](../../docs/solutions/best-practices/outbox-conformance-suite-patterns-2026-04-24.md#pg-advisory-lock-collision-behavior--oq2).
+- **OQ3 — Fault-injection determinism on mysql vs pg**: closed as a
+  write-up. Top-line finding: zero pass/fail divergence — every U10
+  scenario runs byte-identically across pg + mysql + sqlite. Captures
+  the implementation-level divergences the relay normalises (claim
+  primitive, fencedUpdate result-shape, dialectNow precision, driver
+  lock-error surface, `DrizzleQueryError` wrapping) and notes the
+  sqlite carve-out + mysql-driven 30s timeout sizing. See
+  [`outbox-conformance-suite-patterns-2026-04-24.md` § mysql vs pg fault-injection divergence — OQ3](../../docs/solutions/best-practices/outbox-conformance-suite-patterns-2026-04-24.md#mysql-vs-pg-fault-injection-divergence--oq3).
 
 ## Requirements Trace (subset of parent)
 
@@ -401,8 +405,11 @@ write-side half of N4.
 
 ## Next Steps
 
-`/ce-work` this plan. Each unit commits with a `test(drizzle-adapter):`
-conventional-commit scope (or `fix(drizzle-adapter):` if the suite
-surfaces regressions that need fixing alongside). Land on the same
-`feat/g01-transactional-outbox` branch as the relay-core work, or carve
-a sibling branch — the PR #5 reviewer's preference.
+Shipped. U9 + U10 conformance + fault-injection landed across pg + mysql
++ sqlite on branch `feat/g01-outbox-conformance` via
+[selmeci/castore PR #6](https://github.com/selmeci/castore/pull/6); the
+three OQs above were closed in five follow-up commits on the same branch
+(skipped pg drain benchmark + OQ1/OQ2/OQ3 doc write-ups + this status
+flip). Parent §2 success criterion ("zero-loss under induced failure")
+is closed for the write-side half of N4. Production-traffic gating
+remains G-03 consumer dedup per the parent's Scope Boundaries.
