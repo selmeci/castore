@@ -20,6 +20,7 @@
  */
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { vi } from 'vitest';
 
 import {
   ConnectedEventStore,
@@ -33,6 +34,7 @@ import {
   claimSqlite,
   createOutboxRelay,
 } from '../src/relay';
+import type { RelayHooks, RelayOptions } from '../src/relay';
 import {
   DrizzleSqliteEventStorageAdapter,
   eventTable,
@@ -122,33 +124,44 @@ describe('outbox-lambda recipe: cron Lambda that drains outbox with runOnce()', 
   counterEventStore.eventStorageAdapter = adapter;
   const connectedEventStore = new ConnectedEventStore(counterEventStore, bus);
 
-  // Relay registry — maps eventStoreId to the store + channel pair.
-  const relay = createOutboxRelay({
-    dialect: 'sqlite',
-    adapter,
-    db,
-    outboxTable,
-    claim: args => claimSqlite({ db, outboxTable, ...args }),
-    registry: [
-      {
-        eventStoreId: 'COUNTERS',
-        connectedEventStore,
-        channel: bus,
-      },
-    ],
-    hooks: {
-      // In production, wire this to PagerDuty / Datadog / CloudWatch.
-      onDead: ({ row, lastError }) => {
-        console.warn(`[outbox] Row ${row.id} is dead:`, lastError);
-      },
-      onFail: ({ row, error, attempts, nextBackoffMs }) => {
-        console.warn(
-          `[outbox] Publish failed for row ${row.id} (attempt ${attempts}, next retry in ${nextBackoffMs}ms):`,
-          error instanceof Error ? error.message : String(error),
-        );
-      },
+  // Recipe-shape hooks: in production these would be wired to your alerting
+  // stack. The failure-path test below swaps them for `vi.fn()` spies to
+  // assert the hook surface actually fires.
+  const defaultHooks: RelayHooks = {
+    onDead: ({ row, lastError }) => {
+      console.warn(`[outbox] Row ${row.id} is dead:`, lastError);
     },
-  });
+    onFail: ({ row, error, attempts, nextBackoffMs }) => {
+      console.warn(
+        `[outbox] Publish failed for row ${row.id} (attempt ${attempts}, next retry in ${nextBackoffMs}ms):`,
+        error instanceof Error ? error.message : String(error),
+      );
+    },
+  };
+
+  // Relay registry — maps eventStoreId to the store + channel pair.
+  const makeRelay = (
+    hooks: RelayHooks = defaultHooks,
+    options?: RelayOptions,
+  ) =>
+    createOutboxRelay({
+      dialect: 'sqlite',
+      adapter,
+      db,
+      outboxTable,
+      claim: args => claimSqlite({ db, outboxTable, ...args }),
+      registry: [
+        {
+          eventStoreId: 'COUNTERS',
+          connectedEventStore,
+          channel: bus,
+        },
+      ],
+      hooks,
+      options,
+    });
+
+  const relay = makeRelay();
 
   const receivedMessages: unknown[] = [];
   const originalPublishMessage = bus.publishMessage.bind(bus);
@@ -221,5 +234,54 @@ describe('outbox-lambda recipe: cron Lambda that drains outbox with runOnce()', 
     const result = await relay.runOnce();
     expect(result.claimed).toBe(0);
     expect(result.processed).toBe(0);
+  });
+
+  it('invokes onFail then onDead with destructured args when publishMessage rejects', async () => {
+    // Why this test exists: the hooks are how production code observes
+    // outbox failures. If the hook surface ever regresses (signature
+    // change, swapped destructuring, missing wiring), the silent path is
+    // "everything looks fine but the alerting hook never fires." This
+    // test forces both hooks and asserts on the args shape, so a
+    // regression to positional `(row, err)` would surface immediately.
+    bus.publishMessage = async () => {
+      throw new Error('bus down');
+    };
+    const onDead = vi.fn();
+    const onFail = vi.fn();
+    const failingRelay = makeRelay(
+      { onDead, onFail },
+      { maxAttempts: 2, baseMs: 1, ceilingMs: 2 },
+    );
+
+    await connectedEventStore.pushEvent({
+      aggregateId: 'counter-1',
+      version: 1,
+      type: 'COUNTER_INCREMENTED',
+      payload: { at: 1 },
+    });
+
+    // First attempt — publish rejects, onFail fires, claim_token released.
+    await failingRelay.runOnce();
+    // Second attempt — publish rejects again, attempts hits maxAttempts,
+    // onDead fires.
+    await failingRelay.runOnce();
+
+    expect(onFail).toHaveBeenCalledTimes(1);
+    const failArgs = onFail.mock.calls[0]?.[0] as Parameters<
+      NonNullable<RelayHooks['onFail']>
+    >[0];
+    expect(failArgs.row.aggregate_id).toBe('counter-1');
+    expect(failArgs.row.version).toBe(1);
+    expect(failArgs.error).toBeInstanceOf(Error);
+    expect(failArgs.attempts).toBe(1);
+    expect(failArgs.nextBackoffMs).toEqual(expect.any(Number));
+
+    expect(onDead).toHaveBeenCalledTimes(1);
+    const deadArgs = onDead.mock.calls[0]?.[0] as Parameters<
+      NonNullable<RelayHooks['onDead']>
+    >[0];
+    expect(deadArgs.row.aggregate_id).toBe('counter-1');
+    expect(deadArgs.row.version).toBe(1);
+    expect(deadArgs.lastError).toContain('bus down');
   });
 });

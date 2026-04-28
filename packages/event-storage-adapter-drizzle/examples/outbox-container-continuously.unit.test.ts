@@ -17,6 +17,7 @@
  */
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { vi } from 'vitest';
 
 import {
   ConnectedEventStore,
@@ -30,6 +31,7 @@ import {
   claimSqlite,
   createOutboxRelay,
 } from '../src/relay';
+import type { RelayHooks, RelayOptions } from '../src/relay';
 import {
   DrizzleSqliteEventStorageAdapter,
   eventTable,
@@ -116,9 +118,34 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
   counterEventStore.eventStorageAdapter = adapter;
   const connectedEventStore = new ConnectedEventStore(counterEventStore, bus);
 
+  // Recipe-shape hooks: in production these would be wired to your alerting
+  // stack. The failure-path test below swaps them for `vi.fn()` spies to
+  // assert the hook surface actually fires.
+  const defaultHooks: RelayHooks = {
+    onDead: ({ row, lastError }) => {
+      console.warn(`[outbox] Row ${row.id} is dead:`, lastError);
+    },
+    onFail: ({ row, error, attempts, nextBackoffMs }) => {
+      console.warn(
+        `[outbox] Publish failed for row ${row.id} (attempt ${attempts}, next retry in ${nextBackoffMs}ms):`,
+        error instanceof Error ? error.message : String(error),
+      );
+    },
+  };
+
+  const defaultOptions: RelayOptions = {
+    // Aggressive polling so the test doesn't wait long.
+    pollingMs: 50,
+    baseMs: 50,
+    ceilingMs: 200,
+  };
+
   // stop() is permanent — each test that exercises runContinuously needs a
   // fresh relay. This helper mirrors the production setup.
-  const makeRelay = () =>
+  const makeRelay = (
+    hooks: RelayHooks = defaultHooks,
+    options: RelayOptions = defaultOptions,
+  ) =>
     createOutboxRelay({
       dialect: 'sqlite',
       adapter,
@@ -132,23 +159,8 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
           channel: bus,
         },
       ],
-      hooks: {
-        onDead: ({ row, lastError }) => {
-          console.warn(`[outbox] Row ${row.id} is dead:`, lastError);
-        },
-        onFail: ({ row, error, attempts, nextBackoffMs }) => {
-          console.warn(
-            `[outbox] Publish failed for row ${row.id} (attempt ${attempts}, next retry in ${nextBackoffMs}ms):`,
-            error instanceof Error ? error.message : String(error),
-          );
-        },
-      },
-      options: {
-        // Aggressive polling so the test doesn't wait long.
-        pollingMs: 50,
-        baseMs: 50,
-        ceilingMs: 200,
-      },
+      hooks,
+      options,
     });
 
   const receivedMessages: unknown[] = [];
@@ -221,6 +233,66 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
   it('stop() resolves cleanly even when the outbox is empty', async () => {
     const relay = makeRelay();
     const continuousPromise = relay.runContinuously();
+
+    await relay.stop();
+    await expect(continuousPromise).resolves.toBeUndefined();
+  });
+
+  it('invokes onFail then onDead with destructured args when publishMessage rejects', async () => {
+    // Why this test exists: the hooks are how production code observes
+    // outbox failures inside a long-running container. If the hook
+    // surface ever regresses (signature change, swapped destructuring,
+    // missing wiring), the silent path is "everything looks fine but the
+    // alerting hook never fires." This test forces both hooks via the
+    // continuous loop and asserts on the args shape, so a regression to
+    // positional `(row, err)` would surface immediately.
+    bus.publishMessage = async () => {
+      throw new Error('bus down');
+    };
+    const onDead = vi.fn();
+    const onFail = vi.fn();
+    const relay = makeRelay(
+      { onDead, onFail },
+      { ...defaultOptions, maxAttempts: 2 },
+    );
+    const continuousPromise = relay.runContinuously();
+
+    // Same SQLite settle as the happy-path test.
+    await new Promise(r => setTimeout(r, 150));
+    await connectedEventStore.pushEvent({
+      aggregateId: 'counter-1',
+      version: 1,
+      type: 'COUNTER_INCREMENTED',
+      payload: { at: 1 },
+    });
+
+    // Poll until both hooks have fired (deterministic, not wall-clock).
+    let pollAttempts = 0;
+    while (
+      (onFail.mock.calls.length === 0 || onDead.mock.calls.length === 0) &&
+      pollAttempts < 200
+    ) {
+      await new Promise(r => setTimeout(r, 25));
+      pollAttempts++;
+    }
+
+    expect(onFail).toHaveBeenCalled();
+    const failArgs = onFail.mock.calls[0]?.[0] as Parameters<
+      NonNullable<RelayHooks['onFail']>
+    >[0];
+    expect(failArgs.row.aggregate_id).toBe('counter-1');
+    expect(failArgs.row.version).toBe(1);
+    expect(failArgs.error).toBeInstanceOf(Error);
+    expect(failArgs.attempts).toBe(1);
+    expect(failArgs.nextBackoffMs).toEqual(expect.any(Number));
+
+    expect(onDead).toHaveBeenCalledTimes(1);
+    const deadArgs = onDead.mock.calls[0]?.[0] as Parameters<
+      NonNullable<RelayHooks['onDead']>
+    >[0];
+    expect(deadArgs.row.aggregate_id).toBe('counter-1');
+    expect(deadArgs.row.version).toBe(1);
+    expect(deadArgs.lastError).toContain('bus down');
 
     await relay.stop();
     await expect(continuousPromise).resolves.toBeUndefined();
