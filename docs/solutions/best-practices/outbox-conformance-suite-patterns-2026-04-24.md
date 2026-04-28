@@ -100,9 +100,9 @@ on mysql, driver-level rejection on pg). Use `dialectNow()` as a SQL
 fragment in `.set({ processedAt: dialectNow(dialect), … })` — never
 substitute a JS string for a server-time column.
 
-## Ratified defaults (relay-core carried through)
+## Ratified defaults
 
-The U9 + U10 suites ran against the relay-core production defaults unchanged:
+The U9 + U10 suites ran against these production defaults unchanged:
 
 | Knob             | Value       | Rationale |
 |------------------|-------------|-----------|
@@ -116,6 +116,45 @@ The U9 + U10 suites ran against the relay-core production defaults unchanged:
 
 No adjustment required — every conformance and fault-injection scenario
 passes against these values across pg + mysql + sqlite.
+
+### Empirical drain — OQ1
+
+The G-01 sub-plan's OQ1 asked for a one-off drain measurement against a
+single pg relay with a no-op bus to either ratify the table above or
+adjust within the parent R15/R18/R14 envelope. Closing the OQ ratifies
+the table — every percentile sits well inside the envelope.
+
+Harness: the `it.skip(...)` benchmark at
+`packages/event-storage-adapter-drizzle/src/pg/adapter.unit.test.ts`
+under `describe('drizzle pg outbox relay — numeric defaults drain
+benchmark (OQ1, manual)', …)`. Seeds 10,000 outbox rows × 100
+aggregates, mocks `channel.publishMessage` to resolve immediately,
+drains under default relay options, and reports inter-publish gap
+percentiles as the per-row turnaround proxy.
+
+Captured run (postgres 15.3-alpine testcontainer, postgres-js, default
+pool, single relay):
+
+| Metric                       | Value                  |
+|------------------------------|------------------------|
+| Total rows                   | 10,000                 |
+| Seed wallclock               | ~6.2s                  |
+| Drain wallclock              | ~56.8s                 |
+| Throughput                   | ~176 rows/sec          |
+| Drain iterations (`runOnce`) | 213                    |
+| Per-row turnaround p50       | 6.29ms                 |
+| Per-row turnaround p95       | 7.69ms                 |
+| Per-row turnaround p99       | 19.39ms                |
+
+The p99 (19.39ms) is roughly four orders of magnitude below
+`publishTimeoutMs` (150,000ms) — the SQL-only path leaves the entire
+publish-window budget for the bus side of the world. `claimTimeoutMs`
+(300,000ms) likewise has more than enough headroom for the
+batch-of-50 claim → publish → mark cycle observed here, and `baseMs` /
+`ceilingMs` only enter the picture when publishes fail (they did not,
+by construction, in this run). The benchmark stays committed as
+`it.skip(...)` so this measurement can be re-taken on demand without
+adding pg-testcontainer load to CI.
 
 ## Related learnings
 
