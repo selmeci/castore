@@ -51,8 +51,11 @@ integration test that together close parent success criterion §2
 
 ### Explicitly out of scope (deferred to sibling sub-plans)
 
-- **Docs + runtime recipes + README migration note** — deferred to sibling
-  sub-plan `…-g01-outbox-docs-plan.md` (parent unit U11).
+- **Docs + runtime recipes + README migration note** — landed alongside U9/U10
+  in PR #7 against the same `feat/g01-outbox-conformance` branch (parent unit
+  U11). No separate `g01-outbox-docs-plan.md` sub-plan was carved out; the
+  earlier deferral note here was written before that decision and is preserved
+  for trail. The parent plan tracks U11 as completed.
 - **G-03 consumer dedup** — separate brainstorm + plan cycle (parent Scope
   Boundaries).
 - **v1.1 candidates** — parent §7.

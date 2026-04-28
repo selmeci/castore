@@ -274,9 +274,12 @@ describe('claimMysql', () => {
     // Symmetric to the pg U4 unit test "two concurrent claims against the
     // same aggregate are serialized". Pins the mysql claim primitive's
     // FOR UPDATE SKIP LOCKED + earliest-per-aggregate subquery against the
-    // real driver. Uses a pool so the two transactions run on different
-    // physical connections — a single mysql.createConnection would
-    // serialize the queries and the test would pass for the wrong reason.
+    // real driver. Pre-allocates two pool connections and asserts they
+    // have distinct CONNECTION_ID() values, so the two claim transactions
+    // provably run on different physical sessions. (We can't pin true
+    // FOR UPDATE simultaneity from the test side without exposing a
+    // barrier hook in claimMysql; this gets us as close as the public
+    // API allows.)
     const pool = mysql.createPool({
       host: mysqlContainer.getHost(),
       port: mysqlContainer.getPort(),
@@ -285,15 +288,31 @@ describe('claimMysql', () => {
       database: mysqlContainer.getDatabase(),
       connectionLimit: 4,
     });
-    const poolDb = drizzle(pool);
+    const connA = await pool.getConnection();
+    const connB = await pool.getConnection();
     try {
+      // Prove the pool gave us distinct physical sessions. Without this,
+      // a sequential claim path (one claim commits before the other
+      // contends) would still satisfy the `total === 1` assertion below
+      // and the test would pass for the wrong reason.
+      const [idsA] = await connA.query(`SELECT CONNECTION_ID() AS id`);
+      const [idsB] = await connB.query(`SELECT CONNECTION_ID() AS id`);
+      const idA = (idsA as { id: number | string }[])[0]?.id;
+      const idB = (idsB as { id: number | string }[])[0]?.id;
+      expect(idA).toBeDefined();
+      expect(idB).toBeDefined();
+      expect(idA).not.toBe(idB);
+
+      const dbA = drizzle(connA);
+      const dbB = drizzle(connB);
+
       await seed({ aggregateName: 'store', aggregateId: 'a', version: 1 });
       await seed({ aggregateName: 'store', aggregateId: 'a', version: 2 });
       await seed({ aggregateName: 'store', aggregateId: 'a', version: 3 });
 
       const [first, second] = await Promise.all([
         claimMysql({
-          db: poolDb,
+          db: dbA,
           outboxTable,
           batchSize: 10,
           claimTimeoutMs: 60_000,
@@ -301,7 +320,7 @@ describe('claimMysql', () => {
           aggregateNames: ['store'],
         }),
         claimMysql({
-          db: poolDb,
+          db: dbB,
           outboxTable,
           batchSize: 10,
           claimTimeoutMs: 60_000,
@@ -318,6 +337,8 @@ describe('claimMysql', () => {
       const winner = first.length === 1 ? first : second;
       expect(winner[0]?.version).toBe(1);
     } finally {
+      connA.release();
+      connB.release();
       await pool.end();
     }
   });

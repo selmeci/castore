@@ -482,7 +482,12 @@ export const makeOutboxFaultInjectionSuite = <
         // Together with the 40% normal cohort this is a faithful runtime
         // version of the parent-spec scenario; the smaller 5×4 sibling we
         // replaced was insufficient for the FIFO assertion.
-        const aggregates = Array.from({ length: 10 }, () => randomUUID());
+        // Indexed IDs (`agg-N`) instead of randomUUID so the bucket
+        // sequence below is fully deterministic — see the bucket comment
+        // for the no-death guarantee. UUID-based IDs combined with a
+        // string-hash bucket left a ~1e-4 flake path where a single row
+        // could land in the kill bucket for all 15 attempts.
+        const aggregates = Array.from({ length: 10 }, (_, i) => `agg-${i}`);
         const eventsPerAggregate = 10;
         for (const aggId of aggregates) {
           for (let v = 1; v <= eventsPerAggregate; v += 1) {
@@ -490,7 +495,15 @@ export const makeOutboxFaultInjectionSuite = <
           }
         }
 
-        let callIdx = 0;
+        // Track per-row attempt counts so the kill bucket is stable per
+        // {aggregate, version, attempt} rather than dependent on global
+        // call order (which varies by dialect row-return order).
+        const attemptCounts = new Map<string, number>();
+        const getAttemptKey = (aggregateId: string, version: number) =>
+          `${aggregateId}:${version}`;
+        const aggregateIndex = (aggregateId: string): number =>
+          Number(aggregateId.slice(4));
+
         // Successful bus deliveries (the bus actually saw the envelope) —
         // ordered by call sequence. Used for the per-aggregate FIFO
         // assertion. Pre-publish rejects are NOT recorded here because
@@ -498,15 +511,23 @@ export const makeOutboxFaultInjectionSuite = <
         const busDeliveries: Array<{ aggregateId: string; version: number }> =
           [];
         const publishImpl = async (msg: unknown): Promise<void> => {
-          const idx = callIdx;
-          callIdx += 1;
           const event = (
             msg as { event: { aggregateId: string; version: number } }
           ).event;
-          const bucket = idx % 10;
+          const key = getAttemptKey(event.aggregateId, event.version);
+          const attempt = attemptCounts.get(key) ?? 0;
+          attemptCounts.set(key, attempt + 1);
+          // Deterministic bucket sequence: aggregateIndex (0-9) + version
+          // (1-10) + attempt cycles linearly through all 10 buckets, so
+          // every row hits a non-kill bucket (>=4) within at most 4
+          // attempts. Preserves the 20/20/60 split across the population
+          // (uniform over the 10×10×attempt grid) while eliminating the
+          // random-luck dead-row flake path.
+          const bucket =
+            (aggregateIndex(event.aggregateId) + event.version + attempt) % 10;
           if (bucket < 2) {
             // 20% post-claim-pre-publish kill
-            throw new Error(`pre-publish kill #${idx}`);
+            throw new Error(`pre-publish kill ${key}#${attempt}`);
           }
           // For both the slow-publish and normal cohorts the bus has
           // received the envelope; record before the slow wait so the
@@ -528,12 +549,12 @@ export const makeOutboxFaultInjectionSuite = <
           publishImpl as never,
         );
 
-        // maxAttempts = 15 keeps the no-death guarantee comfortable even
-        // under the 40% combined kill rate: probability of a row dying is
-        // 0.4^15 ≈ 1e-6, so ~1e-4 expected deaths over 100 rows. Without
-        // this margin a stray death triggers the dead-blocks-newer FIFO
-        // semantic on its aggregate and the no-stuck-rows assertion fails
-        // for the still-eligible later versions.
+        // maxAttempts = 15 is comfortably above the deterministic worst
+        // case: the bucket sequence guarantees every row escapes the kill
+        // window (bucket < 4) within at most 4 consecutive attempts. If a
+        // dead-row death ever did occur it would trigger the
+        // dead-blocks-newer FIFO semantic on its aggregate and break the
+        // no-stuck-rows assertion for still-eligible later versions.
         const relay = makeRelay(buildRegistry(), {
           options: {
             maxAttempts: 15,

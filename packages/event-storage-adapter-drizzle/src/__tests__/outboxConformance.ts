@@ -1333,8 +1333,11 @@ export const makeOutboxConformanceSuite = <
 
         const depth = (await ctx.db
           .select({ n: sql<number>`COUNT(*)` })
-          .from(ctx.outboxTable)) as Array<{ n: unknown }>;
-        expect(Number(depth[0]!.n)).toBe(2);
+          .from(ctx.outboxTable)
+          .where(sql`processed_at IS NULL AND dead_at IS NULL`)) as Array<{
+          n: unknown;
+        }>;
+        expect(Number(depth[0]!.n)).toBe(1);
 
         const deadCount = (await ctx.db
           .select({ n: sql<number>`COUNT(*)` })
@@ -1391,9 +1394,15 @@ export const makeOutboxConformanceSuite = <
         // OutboxPublishTimeoutError; runContinuously then routes through
         // retry, sleeps pollingMs, and observes state.stopping = true on
         // the next iteration (or its sleep wakes early via wakeController).
-        vi.spyOn(ctx.channel, 'publishMessage').mockImplementation(
-          slowPublishHonoringAbort(200, mockAbortController.signal),
-        );
+        let publishStartedResolve!: () => void;
+        const publishStarted = new Promise<void>(resolve => {
+          publishStartedResolve = resolve;
+        });
+        vi.spyOn(ctx.channel, 'publishMessage').mockImplementation(() => {
+          publishStartedResolve();
+
+          return slowPublishHonoringAbort(200, mockAbortController.signal)();
+        });
 
         // Capture the failure surface so we can pin which path actually
         // fired. The 1s elapsed bound below is loose — it only catches
@@ -1418,8 +1427,8 @@ export const makeOutboxConformanceSuite = <
 
         const startedAt = Date.now();
         const loop = relay.runContinuously();
-        // Give the loop one tick to claim + start the slow publish.
-        await new Promise(resolve => setTimeout(resolve, 25));
+        // Wait until the slow publish has actually started before calling stop().
+        await publishStarted;
 
         await relay.stop();
         await loop;

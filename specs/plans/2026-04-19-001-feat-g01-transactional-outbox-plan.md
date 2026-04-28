@@ -1,7 +1,7 @@
 ---
 title: feat: G-01 Transactional Outbox (Drizzle adapter)
 type: feat
-status: active
+status: completed
 date: 2026-04-19
 origin: specs/requirements/2026-04-19-g01-transactional-outbox-requirements.md
 ---
@@ -311,7 +311,7 @@ One edit, two call sites (line 137 `pushEvent` path and line 168 `onEventPushed`
 
 ### Phase A — Core plumbing + schema
 
-- [ ] **Unit 1: Core outbox-capability short-circuit**
+- [x] **Unit 1: Core outbox-capability short-circuit** — shipped (PR #4)
 
 **Goal:** Add the symbol-tag constants and type-predicate helper to core; short-circuit `publishPushedEvent` when the adapter has `Symbol.for('castore.outbox-enabled') === true`.
 
@@ -358,7 +358,7 @@ One edit, two call sites (line 137 `pushEvent` path and line 168 `onEventPushed`
 - `pnpm test-circular` green.
 - Legacy adapters (postgres, dynamodb, in-memory, http, redux, drizzle-without-outbox) continue to publish via the existing path — verified by running all adapter packages' test suites.
 
-- [ ] **Unit 2: Outbox schema (per-dialect)**
+- [x] **Unit 2: Outbox schema (per-dialect)** — shipped (PR #4)
 
 **Goal:** Export `outboxColumns`, `outboxTable`, and `outboxTableConstraints` from each of the three dialect sub-entrypoints. Schema matches origin R9 (10 columns, unique + index on `(aggregate_name, aggregate_id, version)`, no `channel_id`).
 
@@ -414,7 +414,7 @@ One edit, two call sites (line 137 `pushEvent` path and line 168 `onEventPushed`
 
 ### Phase B — Adapter write path + lookup
 
-- [ ] **Unit 3: Adapter `outbox` option + atomic write**
+- [x] **Unit 3: Adapter `outbox` option + atomic write** — shipped (PR #4)
 
 **Goal:** Extend each dialect's adapter constructor to accept an `outbox` table. When present, atomically write the event row AND outbox row in one transaction on `pushEvent` and `pushEventGroup`. Set the two capability symbols on the adapter instance.
 
@@ -470,7 +470,7 @@ One edit, two call sites (line 137 `pushEvent` path and line 168 `onEventPushed`
 
 ### Phase C — Relay core
 
-- [ ] **Unit 4: Per-dialect claim primitives + FIFO exclusion + fencing-token UPDATE helpers**
+- [x] **Unit 4: Per-dialect claim primitives + FIFO exclusion + fencing-token UPDATE helpers** — shipped (PR #5, derived sub-plan `2026-04-20-002`)
 
 **Goal:** Implement the dialect-specific claim SQL (pg advisory-lock, mysql earliest-per-aggregate SKIP LOCKED, sqlite serial). Implement claim-token fencing in all post-claim UPDATEs.
 
@@ -524,7 +524,7 @@ One edit, two call sites (line 137 `pushEvent` path and line 168 `onEventPushed`
 - Fencing-token property: a test fixture that mutates `claim_token` between claim and `fencedUpdate` returns `affectedRows === 0`.
 - Concurrent-worker test: two workers' rowsets are disjoint under the FIFO predicate.
 
-- [ ] **Unit 5: Relay publish path + envelope reconstruction + nil-row dead**
+- [x] **Unit 5: Relay publish path + envelope reconstruction + nil-row dead** — shipped (PR #5)
 
 **Goal:** Given a claimed row, look up the event, build the right message envelope (Notification vs StateCarrying), and publish via the registered channel. Handle nil-row and missing-registry-entry dead paths.
 
@@ -570,7 +570,7 @@ One edit, two call sites (line 137 `pushEvent` path and line 168 `onEventPushed`
 - `publishMessage` never called when capability symbols indicate a nil-row or missing-registry dead path.
 - `onDead` fires exactly once per transition.
 
-- [ ] **Unit 6: Relay lifecycle (runOnce, runContinuously, retry, hooks, backoff, scrubber)**
+- [x] **Unit 6: Relay lifecycle (runOnce, runContinuously, retry, hooks, backoff, scrubber)** — shipped (PR #5)
 
 **Goal:** Wire the claim-publish-mark loop, backoff logic, hook dispatch with swallow semantics, and graceful shutdown. Includes the `last_error` scrubber.
 
@@ -630,7 +630,7 @@ _`backoff.ts` and `scrubber.ts` (pure utilities) moved to U2's file list — the
 - Graceful `stop()` completes within `pollingMs + typical publishMessage time` in the harness (< 500 ms).
 - Backoff monotonicity: `backoff(t, t*, N)` always ≤ `ceilingMs`.
 
-- [ ] **Unit 7: Admin API + registry validation + assertOutboxEnabled helper**
+- [x] **Unit 7: Admin API + registry validation + assertOutboxEnabled helper** — shipped (PR #5)
 
 **Goal:** Ship `retryRow`, `deleteRow`, relay-constructor registry validation, and the `assertOutboxEnabled(adapter, { mode })` bootstrap helper.
 
@@ -682,7 +682,7 @@ _`backoff.ts` and `scrubber.ts` (pure utilities) moved to U2's file list — the
 - `pnpm --filter @castore/event-storage-adapter-drizzle test-unit` green.
 - `retryRow` return shape matches the documented contract exactly (`{ warning: 'at-most-once-not-guaranteed', rowId }`).
 
-- [ ] **Unit 8: Relay sub-entrypoint wiring (exports map + ESLint + index + barrel)**
+- [x] **Unit 8: Relay sub-entrypoint wiring (exports map + ESLint + index + barrel)** — shipped (PR #5)
 
 **Goal:** Expose the relay via `@castore/event-storage-adapter-drizzle/relay`; update ESLint allow-list; wire index barrel.
 
@@ -722,7 +722,7 @@ _`backoff.ts` and `scrubber.ts` (pure utilities) moved to U2's file list — the
 
 ### Phase D — Conformance + fault-injection tests
 
-- [ ] **Unit 9: Outbox conformance suite + per-dialect wiring**
+- [x] **Unit 9: Outbox conformance suite + per-dialect wiring** — shipped (PR #6, derived sub-plan `2026-04-24-001`)
 
 **Goal:** Write `makeOutboxConformanceSuite({ dialectName, setup, teardown })` that runs all Success-Criteria scenarios against pg, mysql, sqlite.
 
@@ -774,7 +774,7 @@ _`backoff.ts` and `scrubber.ts` (pure utilities) moved to U2's file list — the
 - `pnpm --filter @castore/event-storage-adapter-drizzle test-unit` green — full matrix (12 scenarios × 3 dialects = 36 tests minimum).
 - `pnpm --filter @castore/event-storage-adapter-drizzle test` (type + unit + linter + circular) green.
 
-- [ ] **Unit 10: Fault-injection integration test**
+- [x] **Unit 10: Fault-injection integration test** — shipped (PR #6)
 
 **Goal:** Verify the core claim — "every committed event reaches the bus at-least-once, including under crash-before-claim, crash-between-claim-and-publish, crash-between-publish-and-mark-processed" — per dialect.
 
@@ -811,7 +811,7 @@ _`backoff.ts` and `scrubber.ts` (pure utilities) moved to U2's file list — the
 
 ### Phase E — Docs + runtime recipes
 
-- [ ] **Unit 11: Docs + runtime recipes + README + migration note**
+- [x] **Unit 11: Docs + runtime recipes + README + migration note** — shipped (PR #7) alongside U9/U10 work; no separate `g01-outbox-docs-plan.md` sub-plan was carved out.
 
 **Goal:** Ship the two runtime recipes (Lambda + container), the docs site section, the README outbox chapter, and the migration note — per origin R29, R31, and the supporting R22, R26, R27 docs obligations.
 

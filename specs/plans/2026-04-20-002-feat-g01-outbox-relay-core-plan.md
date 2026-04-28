@@ -1,7 +1,7 @@
 ---
 title: 'feat: G-01 outbox relay core (drizzle adapter)'
 type: feat
-status: active
+status: completed
 date: 2026-04-20
 origin: specs/plans/2026-04-19-001-feat-g01-transactional-outbox-plan.md
 parent_units: [U4, U5, U6, U7, U8]
@@ -126,32 +126,32 @@ follow, Test scenarios, and Verification for each unit are specified in
 full in the parent plan — do NOT restate them in this doc.** This section
 only adds slice-specific overrides and sequencing.
 
-- [ ] **U4 — Per-dialect claim primitives + FIFO exclusion + fencing-token
+- [x] **U4 — Per-dialect claim primitives + FIFO exclusion + fencing-token
   UPDATE helpers.** See parent §Implementation Units. **Execution note:**
   test-first on the fencing-token path (parent says so). Dependencies:
   parent U3 is already landed, so the capability symbols + atomic write
-  are available.
+  are available. Shipped (PR #5).
 
-- [ ] **U5 — Relay publish path + envelope reconstruction + nil-row dead.**
+- [x] **U5 — Relay publish path + envelope reconstruction + nil-row dead.**
   See parent §Implementation Units. Dependencies: U4 (this plan) +
-  parent U1/U3 (landed).
+  parent U1/U3 (landed). Shipped (PR #5).
 
-- [ ] **U6 — Relay lifecycle (runOnce, runContinuously, retry, hooks,
+- [x] **U6 — Relay lifecycle (runOnce, runContinuously, retry, hooks,
   graceful shutdown).** See parent §Implementation Units. **Consumes**
   `common/outbox/backoff.ts` and `common/outbox/scrubber.ts` (already
   shipped by parent U2 — do NOT re-create them). **Execution note:**
   test-first on (a) backoff math, (b) hook-swallow semantics. Dependencies:
-  U4, U5 (this plan).
+  U4, U5 (this plan). Shipped (PR #5).
 
-- [ ] **U7 — Admin API + registry validation + `assertOutboxEnabled` helper.**
-  See parent §Implementation Units. Dependencies: U6 (this plan).
+- [x] **U7 — Admin API + registry validation + `assertOutboxEnabled` helper.**
+  See parent §Implementation Units. Dependencies: U6 (this plan). Shipped (PR #5).
 
-- [ ] **U8 — Relay sub-entrypoint wiring (exports map + ESLint allow-list
+- [x] **U8 — Relay sub-entrypoint wiring (exports map + ESLint allow-list
   + index barrel).** See parent §Implementation Units. **Must update**
   `eslint.config.js` `no-restricted-imports` regex on **both** line
   ~94 and line ~208 (per parent R1 + the
   `docs/solutions/developer-experience/pnpm10-eslint9-native-deps-allow-list-2026-04-18.md`
-  learning). Dependencies: U7 (this plan).
+  learning). Dependencies: U7 (this plan). Shipped (PR #5).
 
 ### Dependency DAG (this plan)
 
