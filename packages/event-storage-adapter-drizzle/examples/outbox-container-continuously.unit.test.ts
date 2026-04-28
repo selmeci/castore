@@ -188,43 +188,46 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
     // entry point; the SIGTERM handler calls `relay.stop()`.
     const continuousPromise = relay.runContinuously();
 
-    // SQLite shares one connection: wait for the relay to finish its first
-    // empty runOnce() + pollingMs sleep so our pushEvent BEGIN doesn't
-    // collide with an in-flight claim transaction.
-    await new Promise(r => setTimeout(r, 150));
+    try {
+      // SQLite shares one connection: wait for the relay to finish its first
+      // empty runOnce() + pollingMs sleep so our pushEvent BEGIN doesn't
+      // collide with an in-flight claim transaction.
+      await new Promise(r => setTimeout(r, 150));
 
-    // Push events while the relay is already running.
-    for (let v = 1; v <= 5; v++) {
-      await connectedEventStore.pushEvent({
-        aggregateId: 'counter-1',
-        version: v,
-        type: 'COUNTER_INCREMENTED',
-        payload: { at: v },
-      });
-    }
-
-    // Poll until all events are published (deterministic, not wall-clock).
-    let attempts = 0;
-    while (receivedMessages.length < 5 && attempts < 100) {
-      await new Promise(r => setTimeout(r, 25));
-      attempts++;
-    }
-
-    expect(receivedMessages).toHaveLength(5);
-    for (let i = 0; i < 5; i++) {
-      expect(receivedMessages[i]).toMatchObject({
-        eventStoreId: 'COUNTERS',
-        event: {
+      // Push events while the relay is already running.
+      for (let v = 1; v <= 5; v++) {
+        await connectedEventStore.pushEvent({
           aggregateId: 'counter-1',
-          version: i + 1,
+          version: v,
           type: 'COUNTER_INCREMENTED',
-          payload: { at: i + 1 },
-        },
-      });
-    }
+          payload: { at: v },
+        });
+      }
 
-    // Graceful shutdown — SIGTERM equivalent.
-    await relay.stop();
+      // Poll until all events are published (deterministic, not wall-clock).
+      let attempts = 0;
+      while (receivedMessages.length < 5 && attempts < 100) {
+        await new Promise(r => setTimeout(r, 25));
+        attempts++;
+      }
+
+      expect(receivedMessages).toHaveLength(5);
+      for (let i = 0; i < 5; i++) {
+        expect(receivedMessages[i]).toMatchObject({
+          eventStoreId: 'COUNTERS',
+          event: {
+            aggregateId: 'counter-1',
+            version: i + 1,
+            type: 'COUNTER_INCREMENTED',
+            payload: { at: i + 1 },
+          },
+        });
+      }
+    } finally {
+      // Graceful shutdown — SIGTERM equivalent. Runs even if assertions
+      // above threw, so the background loop never leaks into later tests.
+      await relay.stop();
+    }
 
     // The continuous loop should have resolved cleanly.
     await expect(continuousPromise).resolves.toBeUndefined();
@@ -257,44 +260,50 @@ describe('outbox-container recipe: long-running worker with runContinuously()', 
     );
     const continuousPromise = relay.runContinuously();
 
-    // Same SQLite settle as the happy-path test.
-    await new Promise(r => setTimeout(r, 150));
-    await connectedEventStore.pushEvent({
-      aggregateId: 'counter-1',
-      version: 1,
-      type: 'COUNTER_INCREMENTED',
-      payload: { at: 1 },
-    });
+    try {
+      // Same SQLite settle as the happy-path test.
+      await new Promise(r => setTimeout(r, 150));
+      await connectedEventStore.pushEvent({
+        aggregateId: 'counter-1',
+        version: 1,
+        type: 'COUNTER_INCREMENTED',
+        payload: { at: 1 },
+      });
 
-    // Poll until both hooks have fired (deterministic, not wall-clock).
-    let pollAttempts = 0;
-    while (
-      (onFail.mock.calls.length === 0 || onDead.mock.calls.length === 0) &&
-      pollAttempts < 200
-    ) {
-      await new Promise(r => setTimeout(r, 25));
-      pollAttempts++;
+      // Poll until both hooks have fired (deterministic, not wall-clock).
+      let pollAttempts = 0;
+      while (
+        (onFail.mock.calls.length === 0 || onDead.mock.calls.length === 0) &&
+        pollAttempts < 200
+      ) {
+        await new Promise(r => setTimeout(r, 25));
+        pollAttempts++;
+      }
+
+      expect(onFail).toHaveBeenCalled();
+      const failArgs = onFail.mock.calls[0]?.[0] as Parameters<
+        NonNullable<RelayHooks['onFail']>
+      >[0];
+      expect(failArgs.row.aggregate_id).toBe('counter-1');
+      expect(failArgs.row.version).toBe(1);
+      expect(failArgs.error).toBeInstanceOf(Error);
+      expect(failArgs.attempts).toBe(1);
+      expect(failArgs.nextBackoffMs).toEqual(expect.any(Number));
+
+      expect(onDead).toHaveBeenCalledTimes(1);
+      const deadArgs = onDead.mock.calls[0]?.[0] as Parameters<
+        NonNullable<RelayHooks['onDead']>
+      >[0];
+      expect(deadArgs.row.aggregate_id).toBe('counter-1');
+      expect(deadArgs.row.version).toBe(1);
+      expect(deadArgs.lastError).toContain('bus down');
+    } finally {
+      // Graceful shutdown — SIGTERM equivalent. Runs even if assertions
+      // above threw, so the background loop never leaks into later tests
+      // with the throwing publishMessage still active.
+      await relay.stop();
     }
 
-    expect(onFail).toHaveBeenCalled();
-    const failArgs = onFail.mock.calls[0]?.[0] as Parameters<
-      NonNullable<RelayHooks['onFail']>
-    >[0];
-    expect(failArgs.row.aggregate_id).toBe('counter-1');
-    expect(failArgs.row.version).toBe(1);
-    expect(failArgs.error).toBeInstanceOf(Error);
-    expect(failArgs.attempts).toBe(1);
-    expect(failArgs.nextBackoffMs).toEqual(expect.any(Number));
-
-    expect(onDead).toHaveBeenCalledTimes(1);
-    const deadArgs = onDead.mock.calls[0]?.[0] as Parameters<
-      NonNullable<RelayHooks['onDead']>
-    >[0];
-    expect(deadArgs.row.aggregate_id).toBe('counter-1');
-    expect(deadArgs.row.version).toBe(1);
-    expect(deadArgs.lastError).toContain('bus down');
-
-    await relay.stop();
     await expect(continuousPromise).resolves.toBeUndefined();
   });
 });

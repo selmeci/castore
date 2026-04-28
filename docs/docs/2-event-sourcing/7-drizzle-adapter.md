@@ -61,7 +61,7 @@ const relay = createOutboxRelay({
   adapter,
   db,
   outboxTable,
-  claim: claimPg,
+  claim: args => claimPg({ db, outboxTable, ...args }),
   registry: [
     {
       eventStoreId: 'USERS',
